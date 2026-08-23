@@ -682,17 +682,23 @@ function handleCloudFiles(files){
    云朵工厂 · 自动云朵形状分析 + Q 版画智能匹配
    ========================================================= */
 
-/* 亮度阈值二值化：把浅色区域（云）从背景分离 */
+/* 亮度阈值二值化：把浅色区域（云）从背景分离
+   关键：云 = 高亮度 + 低饱和（R≈G≈B），蓝天 = 高亮度 + 蓝通道偏高
+   仅用亮度会把浅蓝天空误判成云，必须叠加"白度"约束 */
 function binarizeClouds(cv, w, h){
   const src = cv.getImageData(0,0,w,h);
   const d = src.data;
   // 先算 Otsu 大津阈值（取亮部）
   const hist = new Int32Array(256);
   const gray = new Uint8Array(w*h);
+  const chroma = new Uint8Array(w*h); // max(R,G,B)-min(R,G,B)，低=白/灰
   for(let i=0;i<w*h;i++){
     const o=i*4;
-    const g = Math.round(0.299*d[o]+0.587*d[o+1]+0.114*d[o+2]);
+    const r=d[o], g2=d[o+1], b=d[o+2];
+    const g = Math.round(0.299*r+0.587*g2+0.114*b);
     gray[i]=g; hist[g]++;
+    const mx = Math.max(r,g2,b), mn = Math.min(r,g2,b);
+    chroma[i] = mx-mn;
   }
   let sum=0, wB=0, max=0, thr=200;
   for(let i=0;i<256;i++) sum += i*hist[i];
@@ -705,9 +711,10 @@ function binarizeClouds(cv, w, h){
     const v = wB*wF*(mB-mF)*(mB-mF);
     if(v>max){max=v; thr=t;}
   }
-  // 云 = 亮于阈值的像素，标记为 mask
+  // 云 = 亮于阈值 且 低饱和（白/灰，排除蓝色天空）
+  const CHROMA_MAX = 34;  // 蓝天浅蓝 chroma≈70+，白云≈<15
   const mask = new Uint8Array(w*h);
-  for(let i=0;i<w*h;i++) mask[i] = gray[i]>=thr-6? 1: 0;
+  for(let i=0;i<w*h;i++) mask[i] = (gray[i]>=thr-6 && chroma[i]<=CHROMA_MAX)? 1: 0;
   // 中值滤波：去噪点 3x3
   const m2 = new Uint8Array(w*h);
   for(let y=1;y<h-1;y++){
@@ -1218,13 +1225,6 @@ function autoAdaptCloudStickers(){
   });
 });
 
-// 云朵工厂：点击 dropzone 主动触发文件选择 (iOS 兼容)
-const cloudDropEl = document.getElementById('cloudDrop');
-if(cloudDropEl) cloudDropEl.addEventListener('click', e=>{
-  const inp = document.getElementById('cloudFile');
-  if(inp && e.target !== inp) inp.click();
-});
-
 window.addEventListener('resize', ()=>{ if(bgImg) fitStage(bgImg); });
 
 /* ---------- Sticker Layer 管理 ---------- */
@@ -1478,12 +1478,6 @@ function handlePostFiles(files){
   });
 });
 
-// 旅途邮局：点击 dropzone 主动触发文件选择 (iOS 兼容)
-const postDropEl = document.getElementById('postDrop');
-if(postDropEl) postDropEl.addEventListener('click', e=>{
-  const inp = document.getElementById('postFile');
-  if(inp && e.target !== inp) inp.click();
-});
 $('#postClear').addEventListener('click', ()=>{ posts=[]; renderThumbs(); });
 $('#postDemo').addEventListener('click', async ()=>{
   // 用 canvas 生成 4 张示例风景图
@@ -1805,175 +1799,67 @@ function drawAbstractMarksFromFacts(g, facts, palette, ACCENT, MUTED, LIGHT, mot
   g.save();
   g.lineCap = 'round'; g.lineJoin = 'round';
 
-  // ====== 基底分色层 (mass)：主色块与次级色块 2–3 层 ======
-  const horizonLocalY = cy - h*0.4 + (h*0.8) * facts.horizonY;
   const topRGB = palette[facts.topPaletteIdx];
   const botRGB = palette[facts.botPaletteIdx];
-  // 主色块 1（上半天空/上域）—— 加宽加深
-  const topH = Math.max(8, horizonLocalY - (cy - h*0.46));
-  g.fillStyle = `rgb(${topRGB[0]|0},${topRGB[1]|0},${topRGB[2]|0})`;
-  g.globalAlpha = 0.92;
-  g.beginPath();
-  roundRect(g, cx - w*0.48, cy - h*0.46, w*0.96, topH, 3);
-  g.fill();
+  const hasHorizon = facts.horizonY > 0.18 && facts.horizonY < 0.82;
+  // 地平线在母题内的局部 y（留上下少量呼吸空间）
+  const horizonLocalY = cy - h*0.42 + h*0.84 * facts.horizonY;
 
-  // 主色块 1 的次叠层（上层稍窄，形成 色阶 过渡）
-  g.globalAlpha = 0.58;
-  g.beginPath();
-  roundRect(g, cx - w*0.44, cy - h*0.42, w*0.78, Math.max(4, topH*0.58), 2);
-  g.fill();
-  g.globalAlpha = 1;
-
-  // 主色块 2（下半大地/海/前景）
-  const botBlockY = horizonLocalY + 2;
-  const botBlockH = Math.max(6, (cy + h*0.46) - horizonLocalY - 2);
-  g.fillStyle = `rgb(${botRGB[0]|0},${botRGB[1]|0},${botRGB[2]|0})`;
-  g.globalAlpha = 0.86;
-  g.beginPath();
-  roundRect(g, cx - w*0.48, botBlockY, w*0.96, botBlockH, 3);
-  g.fill();
-  g.globalAlpha = 0.48;
-  g.beginPath();
-  roundRect(g, cx - w*0.40, botBlockY + botBlockH*0.18, w*0.80, Math.max(4, botBlockH*0.55), 2);
-  g.fill();
-  g.globalAlpha = 1;
-
-  // 地平线（墨灰水平线）
-  g.strokeStyle = LIGHT;
-  g.lineWidth = 1.4;
-  g.beginPath();
-  g.moveTo(cx - w*0.48, horizonLocalY);
-  g.lineTo(cx + w*0.48, horizonLocalY);
-  g.stroke();
-
-  // ====== 高彩锚点（ACENT 药丸 + 反射层 + 侧伴）======
-  const accentSize = Math.max(6, Math.min(w*0.20, h*0.26));
-  const gxL = cx + (facts.gravityX - 0.5)*w*0.58;
-  const gyL = horizonLocalY - (1-facts.horizonY)*h*0.28 + (facts.gravityY-0.5)*h*0.08;
-  // 阴影/倒影 拉长的大椭圆
-  g.fillStyle = ACCENT;
-  g.globalAlpha = 0.22;
-  g.beginPath();
-  g.ellipse(gxL + accentSize*0.06, gyL + accentSize*0.60, accentSize*0.58, accentSize*0.18, 0, 0, Math.PI*2);
-  g.fill();
-  // 药丸 主体
-  g.globalAlpha = 1;
-  g.beginPath();
-  g.ellipse(gxL, gyL, accentSize*0.58, accentSize*0.42, 0, 0, Math.PI*2);
-  g.fill();
-  // 药丸 高光（月牙白）
-  g.globalAlpha = 0.8;
-  g.fillStyle = `rgba(255,255,255,0.95)`;
-  g.beginPath();
-  g.ellipse(gxL - accentSize*0.18, gyL - accentSize*0.18, accentSize*0.22, accentSize*0.09, -Math.PI*0.25, 0, Math.PI*2);
-  g.fill();
-  // 侧伴小丸（暗示 repeated object 或 近景同伴）
-  g.globalAlpha = 0.9;
-  g.fillStyle = ACCENT;
-  g.beginPath();
-  g.ellipse(gxL + accentSize*0.92, gyL + accentSize*0.04, accentSize*0.26, accentSize*0.18, 0, 0, Math.PI*2);
-  g.fill();
-  g.globalAlpha = 1;
-
-  // ====== 方向/运动线（travel-photo-abstraction 的 direction→line）======
-  g.strokeStyle = MUTED;
-  g.lineWidth = 1.5;
-  const barX0 = cx - w*0.36;
-  const barY0 = cy - h*0.30;
-  const barLen = w*0.13;
-  if(facts.direction === 'horizontal'){
-    for(let i=0;i<5;i++){
-      g.beginPath();
-      g.moveTo(barX0, barY0 + i*4);
-      g.lineTo(barX0 + barLen - (i%2?8:0), barY0 + i*4);
-      g.stroke();
+  // 上下分区 cell 数，用于无地平线时选主导 mass 色
+  let topN = 0, botN = 0;
+  for(let j=0;j<facts.GY;j++){
+    for(let i=0;i<facts.GX;i++){
+      if(j < facts.GY/2) topN += facts.grid[j][i].px;
+      else               botN += facts.grid[j][i].px;
     }
-  } else if(facts.direction === 'vertical'){
-    for(let i=0;i<5;i++){
-      g.beginPath();
-      g.moveTo(barX0 + i*4, barY0 - 10);
-      g.lineTo(barX0 + i*4, barY0 + barLen - 10 - (i%2?8:0));
-      g.stroke();
-    }
+  }
+  const domRGB = (topN >= botN) ? topRGB : botRGB;
+
+  // ===== 家族 1 · 主母题 = 平涂 mass/field 色块（单一连贯场）=====
+  // 有地平线 → 上域(天) + 下域(地) 两块平涂，构成一个连贯场；
+  // 无地平线 → 单一主导 mass 块。均为纯色平涂，不做 alpha 叠加。
+  const L = cx - w*0.46, R = cx + w*0.46;
+  const topEdge = cy - h*0.42, botEdge = cy + h*0.42;
+  if(hasHorizon){
+    g.fillStyle = `rgb(${topRGB[0]|0},${topRGB[1]|0},${topRGB[2]|0})`;
+    g.fillRect(L, topEdge, R - L, Math.max(1, horizonLocalY - topEdge));
+    g.fillStyle = `rgb(${botRGB[0]|0},${botRGB[1]|0},${botRGB[2]|0})`;
+    g.fillRect(L, horizonLocalY, R - L, Math.max(1, botEdge - horizonLocalY));
   } else {
-    // balanced → 放射状多弧 + 辐条
-    const cxx = barX0 + w*0.06, cyy = barY0;
-    for(let rr=1; rr<=2; rr++){
-      g.beginPath();
-      g.arc(cxx, cyy, w*0.05*rr, -Math.PI*0.95, -Math.PI*0.05);
-      g.stroke();
-    }
-    for(let a=0;a<5;a++){
-      const ang = -Math.PI*0.95 + (Math.PI*0.90) * (a/4);
-      g.beginPath();
-      g.moveTo(cxx + Math.cos(ang)*w*0.02, cyy + Math.sin(ang)*w*0.02);
-      g.lineTo(cxx + Math.cos(ang)*w*0.10, cyy + Math.sin(ang)*w*0.10);
-      g.stroke();
-    }
+    g.fillStyle = `rgb(${domRGB[0]|0},${domRGB[1]|0},${domRGB[2]|0})`;
+    g.fillRect(L, topEdge, R - L, botEdge - topEdge);
   }
 
-  // ====== 重复模块（Repeated objects）======
-  const lastRow = facts.grid[facts.GY-1];
-  let streak = 1, best = 1, bi = 0;
-  for(let i=1;i<lastRow.length;i++){
-    if(lastRow[i].domIdx===lastRow[i-1].domIdx) { streak++; if(streak>best){best=streak; bi=i;} }
-    else streak = 1;
-  }
-  if(best >= 1){
-    const color = palette[lastRow[bi].domIdx];
-    g.fillStyle = `rgb(${color[0]|0},${color[1]|0},${color[2]|0})`;
-    const modY = cy + h*0.28;
-    const startX = cx - w*0.40;
-    const gap = w*0.11;
-    const n = Math.max(3, Math.min(best+2, 6));
-    for(let k=0;k<n;k++){
-      // 交替 圆点/小方块
-      const sz = Math.max(3, w*0.022);
-      if(k%2===0){
-        g.beginPath();
-        g.arc(startX + k*gap, modY + (k%2===0?0:4), sz*0.55, 0, Math.PI*2);
-        g.fill();
-      } else {
-        roundRect(g, startX + k*gap - sz*0.5, modY + 4 - sz*0.5, sz, sz, 1);
-        g.fill();
-      }
-    }
-    // 下一行反色（空心描边）
-    g.globalAlpha = 0.8;
-    g.strokeStyle = LIGHT;
+  // ===== 家族 2 · 辅助 = 地平线/边界 一根细线 =====
+  if(hasHorizon){
+    g.strokeStyle = MUTED;
     g.lineWidth = 1.2;
-    for(let k=0;k<n;k++){
-      const sz = Math.max(3, w*0.022);
-      g.beginPath();
-      g.arc(startX + k*gap, modY + sz*1.6 + (k%2===0?4:0), sz*0.45, 0, Math.PI*2);
-      g.stroke();
-    }
+    g.globalAlpha = 0.85;
+    g.beginPath();
+    g.moveTo(L, horizonLocalY);
+    g.lineTo(R, horizonLocalY);
+    g.stroke();
     g.globalAlpha = 1;
   }
 
-  // ====== 嵌套/遮挡方块（Occlusion）======
-  g.fillStyle = LIGHT;
-  g.globalAlpha = 0.55;
-  roundRect(g, cx - w*0.42, cy + h*0.08, w*0.22, h*0.22, 2);
-  g.fill();
-  g.globalAlpha = 0.85;
-  g.fillStyle = MUTED;
-  roundRect(g, cx - w*0.32, cy + h*0.14, w*0.10, h*0.10, 2);
-  g.fill();
-  g.globalAlpha = 1;
-
-  // ====== 垂直结构参考线（travel-photo-abstraction 的 spatial framework）======
-  g.strokeStyle = LIGHT;
-  g.globalAlpha = 0.6;
-  g.lineWidth = 1;
-  for(let i=1;i<3;i++){
-    const vx = cx - w*0.5 + w*0.9 * (i/3);
-    g.beginPath();
-    g.moveTo(vx, cy - h*0.46);
-    g.lineTo(vx, cy + h*0.46);
-    g.stroke();
+  // ===== 家族 3 · 辅助 = 高彩 compact object 锚点（单一）=====
+  // gc-minimal-zine-poster：单一高饱和主色，占视觉簇 15–35%
+  const accentR = Math.max(4, Math.min(w*0.14, h*0.14));
+  // 有地平线 → 锚点落在靠近地平线的「上域或下域」；无 → 落在重心处
+  let ax = cx + (facts.gravityX - 0.5) * w * 0.5;
+  let ay;
+  if(hasHorizon){
+    // 重力偏上 → 天空里的圆点（日/月）；偏下 → 贴地平线略下方
+    ay = (facts.gravityY < 0.5)
+      ? horizonLocalY - h*0.16 - accentR*0.4
+      : horizonLocalY + h*0.12;
+  } else {
+    ay = cy + (facts.gravityY - 0.5) * h * 0.5;
   }
-  g.globalAlpha = 1;
+  g.fillStyle = ACCENT;
+  g.beginPath();
+  g.arc(ax, ay, accentR, 0, Math.PI*2);
+  g.fill();
 
   g.restore();
 }
