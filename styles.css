@@ -136,7 +136,7 @@ main{position:relative; z-index:2; max-width:1280px; margin:0 auto; padding:18px
 
 /* ---- 上传区 ---- */
 .dropzone{
-  display:block; border-radius:var(--radius);
+  display:block; position:relative; border-radius:var(--radius);
   border:2px dashed rgba(124,108,247,.45);
   background:linear-gradient(180deg, #ffffff99, #f5f1ff99);
   padding:22px 14px; cursor:pointer; text-align:center;
