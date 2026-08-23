@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>云邮四海 · Clouds & Postcards Worldwide</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600&family=Ma+Shan+Zheng&family=ZCOOL+KuaiLe&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <!-- 背景装饰 -->
+  <div class="sky-bg" aria-hidden="true">
+    <svg class="cloud c1" viewBox="0 0 200 100"><path d="M40 70c-18 0-32-14-32-32s14-32 32-32c6 0 12 2 16 6 8-18 26-30 48-26 26 4 44 30 38 56 14-4 30 4 34 18 6 18-10 38-30 38-4-10-14-18-26-18-4 0-8 1-12 2-6-14-22-24-40-20-14 3-24 14-28 26-2 0-4 2-6 2z"/></svg>
+    <svg class="cloud c2" viewBox="0 0 200 100"><path d="M40 70c-18 0-32-14-32-32s14-32 32-32c6 0 12 2 16 6 8-18 26-30 48-26 26 4 44 30 38 56 14-4 30 4 34 18 6 18-10 38-30 38-4-10-14-18-26-18-4 0-8 1-12 2-6-14-22-24-40-20-14 3-24 14-28 26-2 0-4 2-6 2z"/></svg>
+    <svg class="cloud c3" viewBox="0 0 200 100"><path d="M40 70c-18 0-32-14-32-32s14-32 32-32c6 0 12 2 16 6 8-18 26-30 48-26 26 4 44 30 38 56 14-4 30 4 34 18 6 18-10 38-30 38-4-10-14-18-26-18-4 0-8 1-12 2-6-14-22-24-40-20-14 3-24 14-28 26-2 0-4 2-6 2z"/></svg>
+    <div class="stars" aria-hidden="true"></div>
+  </div>
+
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark">✈</span>
+      <h1>云邮四海</h1>
+      <span class="brand-sub">Clouds & Postcards Worldwide</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab is-active" role="tab" aria-selected="true" data-target="cloud">
+        <span class="tab-icon">☁️</span>
+        <span class="tab-text">云朵工厂</span>
+      </button>
+      <button class="tab" role="tab" aria-selected="false" data-target="post">
+        <span class="tab-icon">🏣</span>
+        <span class="tab-text">旅途邮局</span>
+      </button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ================= 云朵工厂 ================= -->
+    <section id="cloud" class="panel is-active" role="tabpanel">
+      <div class="panel-intro">
+        <h2><span class="emoji">☁️</span> 云朵工厂 <small>Cloud Silhouette Workshop</small></h2>
+        <p>上传一张天空照片，系统会自动识别每一朵云的<b>轮廓形状与比例</b>，在云朵的<b>像素级位置</b>上为它画上一双大眼睛、腮红与微笑，并根据云的"身材"长出猫耳/柴犬垂耳/仙女光环/弯月星辰……云本身就是 Q 版画的身体，不再是贴一张固定轮廓。</p>
+      </div>
+
+      <div class="workbench">
+        <aside class="sidebar">
+          <div class="card">
+            <h3>① 上传云图</h3>
+            <div class="dropzone" id="cloudDrop" onclick="document.getElementById('cloudFile').click()">
+              <input type="file" id="cloudFile" accept="image/*" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;overflow:hidden" />
+              <div class="dz-inner">
+                <div class="dz-icon">📷</div>
+                <div class="dz-text">点击或拖拽云朵照片到这里</div>
+                <div class="dz-hint">支持 JPG / PNG / WEBP</div>
+              </div>
+            </div>
+            <div class="row">
+              <button class="btn ghost" id="cloudClear">清空画布</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>② Q版画风格调整</h3>
+            <p class="tip" style="margin:0 0 12px;color:#7b7669"><b>云本身就是角色的身体与脸蛋。</b>下方按钮切换风格后，系统会立即按当前风格<b>重新为每一朵云绘制五官+配件</b>（不会添加任何固定外轮廓线）。</p>
+            <div class="chips">
+              <button class="chip is-active" data-cat="auto">🎲 自动匹配</button>
+              <button class="chip" data-cat="animal">🐾 可爱动物</button>
+              <button class="chip" data-cat="fairy">🌙 古风仙气</button>
+              <button class="chip" data-cat="mix">✦ 混搭幻想</button>
+            </div>
+            <div class="row" style="margin-top:10px">
+              <button class="btn ghost" id="cloudReAnalyze">🔄 重新为每朵云画 Q 脸</button>
+            </div>
+            <!-- 旧的贴纸面板保留隐藏，向后兼容；但不再作为推荐入口 -->
+            <details style="margin-top:12px">
+              <summary class="tip" style="cursor:pointer;color:#999382;">▸ 高级：手动叠加装饰贴纸（不推荐，会覆盖在Q版画上）</summary>
+              <div class="sticker-grid" id="stickerGrid" style="margin-top:10px"></div>
+              <p class="tip">点击即添加到画布；可多次叠加、调整大小与角度。</p>
+            </details>
+          </div>
+
+          <div class="card" id="stickerTools" hidden>
+            <h3>③ 贴纸微调（仅对手动添加的贴纸生效）</h3>
+            <div class="ctrl-row">
+              <label>大小</label>
+              <input type="range" id="scaleRange" min="10" max="300" value="100" />
+              <span id="scaleVal">100%</span>
+            </div>
+            <div class="ctrl-row">
+              <label>旋转</label>
+              <input type="range" id="rotRange" min="-180" max="180" value="0" />
+              <span id="rotVal">0°</span>
+            </div>
+            <div class="ctrl-row">
+              <label>透明度</label>
+              <input type="range" id="opRange" min="10" max="100" value="100" />
+              <span id="opVal">100%</span>
+            </div>
+            <div class="ctrl-row">
+              <label>线条色</label>
+              <div class="swatches" id="strokeColors">
+                <span class="swatch" style="--c:#1d1d1f" data-c="#1d1d1f"></span>
+                <span class="swatch" style="--c:#6c5ce7" data-c="#6c5ce7"></span>
+                <span class="swatch" style="--c:#e84393" data-c="#e84393"></span>
+                <span class="swatch" style="--c:#00b894" data-c="#00b894"></span>
+                <span class="swatch" style="--c:#fdcb6e" data-c="#fdcb6e"></span>
+                <span class="swatch" style="--c:#ffffff" data-c="#ffffff"></span>
+              </div>
+            </div>
+            <div class="ctrl-row">
+              <label>描边粗细</label>
+              <input type="range" id="strokeW" min="1" max="10" value="3" />
+              <span id="strokeVal">3</span>
+            </div>
+            <div class="row split">
+              <button class="btn ghost" id="bringFront">置顶</button>
+              <button class="btn ghost" id="sendBack">置底</button>
+              <button class="btn danger" id="delSticker">删除</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="row split">
+              <button class="btn primary" id="cloudDownload">⬇ 保存作品</button>
+            </div>
+          </div>
+        </aside>
+
+        <div class="stage-wrap">
+          <div class="stage" id="cloudStage">
+            <div class="empty-hint" id="cloudEmpty">
+              <div class="big-emoji">☁️</div>
+              <p>先传一张云朵照片开始创作吧～</p>
+            </div>
+            <canvas id="cloudCanvas"></canvas>
+            <div class="sticker-layer" id="stickerLayer"></div>
+          </div>
+          <div class="stage-foot">
+            <small>所有 Q 版画五官（眼/嘴/腮红/猫耳/光环…）直接画在云朵的像素上，<b>云本身就是角色身体</b>。</small>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 旅途邮局 ================= -->
+    <section id="post" class="panel" role="tabpanel">
+      <div class="panel-intro">
+        <h2><span class="emoji">🏣</span> 旅途邮局 <small>Journey Photo Atelier</small></h2>
+        <p>调用 GitHub Skill <b>travel-photo-abstraction</b> 与 <b>gc-minimal-zine-poster</b> 的官方规范处理：每张作品做成<b>「上半原图 + 下半抽象面板」</b>的上下拼接海报。<b>上半照片完全保留原始像素与色彩</b>（不重绘、不加滤镜、不做二次生成）；下半面板从原照片提取 3–5 个可观察空间事实（地平线、重心、色块、方向、重复节奏），映射为极简母题（质量→色块、物体→药丸、地平线→细线…），配以 #F3F0E8 象牙白底色、单高彩锚点、75–88% 留白与档案式微型编号 / 日期 / 氛围短语。</p>
+      </div>
+
+      <div class="workbench">
+        <aside class="sidebar">
+          <div class="card">
+            <h3>① 上传照片</h3>
+            <div class="dropzone" id="postDrop" onclick="document.getElementById('postFile').click()">
+              <input type="file" id="postFile" accept="image/*" multiple style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;overflow:hidden" />
+              <div class="dz-inner">
+                <div class="dz-icon">🖼️</div>
+                <div class="dz-text">拖拽或选择 ≤5 张照片</div>
+                <div class="dz-hint" id="postCount">已选 0 / 5 张</div>
+              </div>
+            </div>
+            <div class="row split">
+              <button class="btn ghost" id="postClear">清空</button>
+              <button class="btn ghost" id="postDemo">放入示例图</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>② 选择风格</h3>
+            <div class="styles" id="styleGrid">
+              <label class="style is-active" data-style="abstract-editorial">
+                <input type="radio" name="postStyle" value="abstract-editorial" checked />
+                <div class="style-preview preview-abstraction"></div>
+                <div class="style-name">Travel Photo Abstraction · 源关系抽取</div>
+                <div class="style-desc">严格 Skill 规范：上半原图+下半极简抽象面板</div>
+              </label>
+              <label class="style" data-style="zine">
+                <input type="radio" name="postStyle" value="zine" />
+                <div class="style-preview preview-zine"></div>
+                <div class="style-name">GC Minimal Zine Poster · 档案杂志感</div>
+                <div class="style-desc">钴蓝高彩锚点 + 极窄微文字，诗意档案留白</div>
+              </label>
+              <label class="style" data-style="prompt">
+                <input type="radio" name="postStyle" value="prompt" />
+                <div class="style-preview preview-prompt"></div>
+                <div class="style-name">自定义提示词 · Prompt Caption</div>
+                <div class="style-desc">两 Skill 面板 + 语义 LUT 色调 + 一句手写衬线注脚</div>
+              </label>
+            </div>
+          </div>
+
+          <div class="card" id="promptCard" hidden>
+            <h3>③ 写下一句话</h3>
+            <textarea id="promptInput" rows="3" placeholder="例如：夏日的海岸线，带着海盐味的风。&#10;※ 语义关键词会自动匹配风格色调：日落暖橙、海洋蓝紫、森林绿、梦幻粉紫、复古胶片、赛博霓虹、日系清新、黑白单色等。"></textarea>
+            <div class="ctrl-row">
+              <label>字体</label>
+              <select id="promptFont">
+                <option value="'Ma Shan Zheng', serif">毛笔手写体</option>
+                <option value="'ZCOOL KuaiLe', sans-serif">可爱快乐体</option>
+                <option value="'Fredoka', sans-serif">圆润英文体</option>
+                <option value="Georgia, serif">衬线体</option>
+              </select>
+            </div>
+            <div class="ctrl-row">
+              <label>文字位置</label>
+              <select id="promptPos">
+                <option value="bottom">下方 · Bottom</option>
+                <option value="top">上方 · Top</option>
+                <option value="center">居中 · Center</option>
+              </select>
+            </div>
+            <div class="ctrl-row">
+              <label>文字颜色</label>
+              <div class="swatches" id="promptColors">
+                <span class="swatch is-active" style="--c:#fff" data-c="#fff"></span>
+                <span class="swatch" style="--c:#111" data-c="#111"></span>
+                <span class="swatch" style="--c:#ff7675" data-c="#ff7675"></span>
+                <span class="swatch" style="--c:#74b9ff" data-c="#74b9ff"></span>
+                <span class="swatch" style="--c:#ffeaa7" data-c="#ffeaa7"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="row split">
+              <button class="btn primary" id="postProcess">🎞 一键处理全部</button>
+            </div>
+            <div class="row split" id="postSaveRow" hidden>
+              <button class="btn success" id="postDownloadAll">📦 打包下载全部 (ZIP)</button>
+            </div>
+            <p class="tip">每张照片可单独点击保存。</p>
+          </div>
+        </aside>
+
+        <div class="stage-wrap">
+          <div class="thumb-grid" id="postThumbs">
+            <div class="empty-hint big">
+              <div class="big-emoji">🏝️</div>
+              <p>上传你在旅途中的照片，我们来把它们做成明信片～</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <span>made with ☁️ + 💌 · 云邮四海</span>
+  </footer>
+
+  <!-- Toast -->
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
