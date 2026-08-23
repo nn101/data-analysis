@@ -146,6 +146,18 @@ main{position:relative; z-index:2; max-width:1280px; margin:0 auto; padding:18px
 }
 .dropzone:hover{border-color:var(--brand); transform:translateY(-1px)}
 .dropzone.dragover{border-color:var(--brand-2); background:#fff0f8}
+/* 文件 input 视觉隐藏但保持可交互（不能 display:none，否则 iOS label 无法触发） */
+.file-input{
+  position:absolute;
+  width:1px; height:1px;
+  padding:0; margin:-1px;
+  overflow:hidden;
+  clip:rect(0 0 0 0);
+  clip-path:inset(50%);
+  white-space:nowrap;
+  border:0;
+  opacity:0;
+}
 .dz-icon{font-size:34px; line-height:1}
 .dz-text{margin-top:8px; font-size:14px; color:var(--ink-soft)}
 .dz-hint{margin-top:4px; font-size:12px; color:var(--muted)}
