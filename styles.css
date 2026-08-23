@@ -141,6 +141,8 @@ main{position:relative; z-index:2; max-width:1280px; margin:0 auto; padding:18px
   background:linear-gradient(180deg, #ffffff99, #f5f1ff99);
   padding:22px 14px; cursor:pointer; text-align:center;
   transition:all .2s ease;
+  -webkit-tap-highlight-color:transparent;
+  user-select:none;
 }
 .dropzone:hover{border-color:var(--brand); transform:translateY(-1px)}
 .dropzone.dragover{border-color:var(--brand-2); background:#fff0f8}
