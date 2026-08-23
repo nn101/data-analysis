@@ -704,25 +704,26 @@ async function processOne(p){
   canvas.width = 1200; canvas.height = Math.round(1200 * ratio);
   const g = canvas.getContext('2d');
   g.imageSmoothingEnabled = true;
-  if(style==='abstraction') drawAbstraction(g, p.img, canvas);
+  if(style==='abstract-editorial') drawAbstractEditorial(g, p.img, canvas);
   else if(style==='zine') drawZine(g, p.img, canvas);
   else drawPrompt(g, p.img, canvas);
   p.canvas = canvas;
   p.processed = true;
 }
 
-/* 风格 A：旅途抽象 —— 色块提炼 + 色带 + 几何 */
-function drawAbstraction(g, img, c){
+/* 风格 A：Photo Abstract Editorial —— 画报抽象：大色块 + 分层色阶 + 刊头排版 */
+function drawAbstractEditorial(g, img, c){
   const w = c.width, h = c.height;
-  // 1. 先绘制原图（轻微降饱和+对比）
-  g.filter = 'saturate(.92) contrast(1.05) brightness(1.03)';
+  // 1. 先 drawImage 原图（微调色彩）
+  g.save();
+  g.filter = 'saturate(1.05) contrast(1.08) brightness(1.02)';
   g.drawImage(img,0,0,w,h);
-  g.filter = 'none';
-  // 2. 近似做 posterize：使用 getImageData 量化
+  g.restore();
+  // 2. 色阶量化，更硬朗的大色块（6-7 级）
   try{
     const data = g.getImageData(0,0,w,h);
     const d = data.data;
-    const levels = 6; // 量化级别
+    const levels = 7;
     const step = 255/(levels-1);
     for(let i=0;i<d.length;i+=4){
       d[i]   = Math.round(Math.round(d[i]/step)*step);
@@ -731,51 +732,98 @@ function drawAbstraction(g, img, c){
     }
     g.putImageData(data,0,0);
   }catch(e){}
-  // 3. 叠暖色渐变薄雾
+  // 3. 叠两层渐变雾：暖 + 紫，营造画报胶片感
   const mist = g.createLinearGradient(0,0,w,h);
-  mist.addColorStop(0,'rgba(255,180,120,.12)');
-  mist.addColorStop(1,'rgba(120,80,255,.10)');
+  mist.addColorStop(0,'rgba(255,190,130,.18)');
+  mist.addColorStop(0.55,'rgba(255,140,200,.05)');
+  mist.addColorStop(1,'rgba(120,90,255,.16)');
   g.fillStyle = mist; g.fillRect(0,0,w,h);
-  // 4. 几何色块装饰
+
   const palette = [
-    ['#ff8ec7',.35], ['#7c6cf7',.28], ['#ffd38a',.35], ['#00b894',.28], ['#000000',.10], ['#ffffff',.12]
+    ['#ff7eb9',.42], ['#7c6cf7',.34], ['#ffd38a',.42],
+    ['#00b894',.28], ['#1e1c38',.14], ['#ffffff',.18], ['#ff6b6b',.30]
   ];
-  // 顶部装饰条
-  g.fillStyle = 'rgba(255,255,255,.7)';
-  g.fillRect(0,0,w, 36);
-  g.fillStyle = 'rgba(30,28,56,.82)';
-  g.font = "700 16px Fredoka, sans-serif";
-  g.textBaseline = 'middle';
-  g.fillText('TRAVEL  ·  ABSTRACTION  ·  旅途剪影', 22, 18);
-  g.fillText('No.' + String(Math.floor(Math.random()*9000)+1000).padStart(4,'0'), w-130, 18);
-  // 底部色带
-  const bands = 5;
-  for(let i=0;i<bands;i++){
-    const col = palette[i%palette.length];
-    g.fillStyle = hexA(col[0], col[1]*0.8);
-    g.fillRect(0, h-20*(bands-i), w, 20);
-  }
-  // 右下角印章
-  drawStamp(g, w-80, h-140, 'TRIP');
-  // 几何拼贴：圆形/矩形抽象
-  const rand = mulberry32(seedFromImg(img));
-  for(let i=0;i<6;i++){
-    const x = rand()*w, y=rand()*h*0.8, r = 30 + rand()*90;
-    const col = palette[(i*2)%palette.length];
-    g.fillStyle = hexA(col[0], col[1]);
-    g.beginPath();
-    if(i%2===0) g.arc(x,y,r,0,Math.PI*2);
-    else g.rect(x,y,r, r*0.7);
-    g.fill();
-  }
-  // 标签文字
+
+  // 4. 画刊头：顶部白底大横条 + 大标题 + 英文副标
+  const barH = Math.round(h*0.12);
+  g.fillStyle = '#ffffff';
+  g.fillRect(0,0,w,barH);
   g.fillStyle = '#1e1c38';
-  g.font = '700 44px "ZCOOL KuaiLe", serif';
+  g.font = "700 18px Fredoka, sans-serif";
+  g.textBaseline = 'middle';
+  g.fillText('VOL.  ABSTRACT  ·  EDITORIAL', 30, barH*0.32);
+  g.font = '800 ' + Math.max(26, Math.round(barH*0.44)) + 'px "ZCOOL KuaiLe", serif';
+  g.fillText('旅途 · 画 · 报', 30, barH*0.72);
+  // 右上：编号 + 日期
+  g.textAlign = 'right';
+  g.font = '700 14px Fredoka, sans-serif';
+  g.fillText('ISSUE No.' + String(Math.floor(Math.random()*9000)+1000), w-30, barH*0.32);
+  g.fillText(new Date().toLocaleDateString(), w-30, barH*0.68);
+  g.textAlign='left';
+  // 分隔线
+  g.strokeStyle = '#1e1c38'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(30, barH-2); g.lineTo(w-30, barH-2); g.stroke();
+
+  // 5. 抽象几何拼贴
+  const rand = mulberry32(seedFromImg(img));
+  const shapes = Math.floor(5 + rand()*6);
+  for(let i=0;i<shapes;i++){
+    const col = palette[Math.floor(rand()*palette.length)];
+    g.fillStyle = hexA(col[0], col[1]);
+    const kind = Math.floor(rand()*3);
+    const x = rand()*w, y = barH + rand()*(h-barH)*0.86;
+    const r = 40 + rand()*160;
+    if(kind===0){ // 圆形
+      g.beginPath(); g.arc(x,y,r,0,Math.PI*2); g.fill();
+    } else if(kind===1){ // 矩形
+      g.save();
+      g.translate(x,y); g.rotate((rand()-.5)*.6);
+      g.fillRect(-r/2, -r/4, r, r*0.5);
+      g.restore();
+    } else { // 三角
+      g.beginPath();
+      g.moveTo(x,y);
+      g.lineTo(x+r, y+r*0.6);
+      g.lineTo(x-r*0.4, y+r);
+      g.closePath(); g.fill();
+    }
+  }
+
+  // 6. 底部色带条（杂志风格）
+  const bandH = 22;
+  palette.slice(0,6).forEach((col,i)=>{
+    g.fillStyle = hexA(col[0], Math.min(.8, col[1]+.25));
+    g.fillRect(0, h-bandH*(6-i), w, bandH);
+  });
+
+  // 7. 左下角大块标题卡片
+  const cardX = 36, cardY = h - bandH*6 - 210;
+  const cardW = w*0.56, cardH = 170;
+  g.fillStyle = 'rgba(255,255,255,.92)';
+  roundRect(g, cardX, cardY, cardW, cardH, 16); g.fill();
+  g.strokeStyle = '#1e1c38'; g.lineWidth = 1.5;
+  roundRect(g, cardX, cardY, cardW, cardH, 16); g.stroke();
+
+  g.fillStyle = '#1e1c38';
+  g.font = `700 ${Math.max(14, Math.round(cardH*0.09))}px Fredoka, sans-serif`;
   g.textBaseline = 'top';
-  g.fillText('旅 途 印 象', 28, h-180);
-  g.font = '500 18px Fredoka, sans-serif';
-  g.fillStyle = '#2b2548';
-  g.fillText('a small piece of somewhere far away', 32, h-128);
+  g.fillText('A  B S T R A C T  ·  某  一  帧', cardX+22, cardY+20);
+  g.font = `500 ${Math.max(13, Math.round(cardH*0.085))}px Georgia, serif`;
+  g.fillStyle = '#4a4a55';
+  const quote = 'Somewhere between the road and the sky, we found a color of our own.';
+  wrapText(g, quote, 'Georgia, serif', Math.round(cardH*0.085), cardW-44).forEach((ln,i)=>{
+    g.fillText(ln, cardX+22, cardY+62 + i*24);
+  });
+
+  // 8. 右下角印章
+  drawStamp(g, w-110, cardY + 30, 'EDIT', '#b23b81');
+
+  // 9. 左侧页码条
+  g.fillStyle = '#1e1c38';
+  g.fillRect(0, barH+16, 6, 40);
+  g.font = '700 14px Fredoka, sans-serif';
+  g.textBaseline = 'top';
+  g.fillText('P.' + (1+Math.floor(rand()*99)), 18, barH+26);
 }
 
 /* 风格 B：极简杂志 —— 黑白 / 留白 / 衬线字排版 */
@@ -862,7 +910,7 @@ function drawPrompt(g, img, c){
   const text = ($('#promptInput').value || '写一句属于自己的话，\n把旅途的心情装进去。').trim();
   const font = $('#promptFont').value;
   const pos = $('#promptPos').value;
-  const color = ($('#promptColors .swatch.is-active')[0] ? $('#promptColors .swatch.is-active') : $('#promptColors .swatch')).dataset.c;
+  const color = ($$('#promptColors .swatch.is-active')[0] || $$('#promptColors .swatch')[0] || document.createElement('span')).dataset.c || '#ffffff';
   const maxWidth = w*0.78;
   const baseSize = Math.max(30, Math.round(w/22));
 
@@ -1000,7 +1048,7 @@ $('#postDownloadAll').addEventListener('click', async ()=>{
   toast('打包下载完成 📦');
 });
 
-/* 初次：提示文字颜色初始化，保证至少有一个激活 */
-if(!$('#promptColors .swatch.is-active').length){
-  $('#promptColors .swatch').item(0).classList.add('is-active');
-}
+  const swatches = $$('#promptColors .swatch');
+  if(!swatches.some(s=>s.classList.contains('is-active')) && swatches[0]){
+    swatches[0].classList.add('is-active');
+  }
