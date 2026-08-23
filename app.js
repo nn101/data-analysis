@@ -606,12 +606,30 @@ function renderStickers(cat){
 }
 renderStickers('animal');
 
-$$('.chip').forEach(chip=>{
+// ===== Q版画风格选择 =====
+// cueStyleHint: 'auto' = 按 blob 特征自由匹配; 'animal'/'fairy'/'mix' = 强制在该风格家族内选
+let cueStyleHint = 'auto';
+$$('.chip[data-cat]').forEach(chip=>{
   chip.addEventListener('click', ()=>{
-    $$('.chip').forEach(c=>c.classList.remove('is-active'));
-    chip.classList.add('is-active');
-    renderStickers(chip.dataset.cat);
+    const cat = chip.dataset.cat;
+    $$('.chip[data-cat]').forEach(c=>c.classList.toggle('is-active', c===chip));
+    cueStyleHint = cat;
+    // 如果是 auto/animal/fairy/mix 这 4 个"Q版画风格"按钮 → 立即重新画脸（若已有云图）
+    if(['auto','animal','fairy','mix'].includes(cat) && bgImg){
+      clearAllStickers();   // 移除 DOM 层的手动贴纸（避免混乱）
+      autoAdaptCloudStickers();
+    } else if (cat && STICKERS[cat]) {
+      // 旧兼容：原始贴纸分类
+      renderStickers(cat);
+    }
   });
+});
+
+// 重新为所有云画 Q 脸按钮
+const reAnalyzeBtn = document.getElementById('cloudReAnalyze');
+if(reAnalyzeBtn) reAnalyzeBtn.addEventListener('click', ()=>{
+  if(!bgImg) return toast('请先上传一张云朵照片～');
+  autoAdaptCloudStickers();
 });
 
 /* ---------- Canvas：背景图 ---------- */
@@ -654,8 +672,539 @@ function handleCloudFiles(files){
     bgImg = img;
     fitStage(img);
     clearAllStickers();
-    toast('云朵照已就位～');
+    // 自动分析云朵形状，匹配 Q 版画
+    toast('正在识别云朵形状…');
+    setTimeout(()=>autoAdaptCloudStickers(), 120);
   });
+}
+
+/* =========================================================
+   云朵工厂 · 自动云朵形状分析 + Q 版画智能匹配
+   ========================================================= */
+
+/* 亮度阈值二值化：把浅色区域（云）从背景分离 */
+function binarizeClouds(cv, w, h){
+  const src = cv.getImageData(0,0,w,h);
+  const d = src.data;
+  // 先算 Otsu 大津阈值（取亮部）
+  const hist = new Int32Array(256);
+  const gray = new Uint8Array(w*h);
+  for(let i=0;i<w*h;i++){
+    const o=i*4;
+    const g = Math.round(0.299*d[o]+0.587*d[o+1]+0.114*d[o+2]);
+    gray[i]=g; hist[g]++;
+  }
+  let sum=0, wB=0, max=0, thr=200;
+  for(let i=0;i<256;i++) sum += i*hist[i];
+  let sumB=0;
+  for(let t=120;t<250;t++){
+    wB += hist[t]; if(!wB) continue;
+    const wF = w*h-wB; if(!wF) break;
+    sumB += t*hist[t];
+    const mB=sumB/wB, mF=(sum-sumB)/wF;
+    const v = wB*wF*(mB-mF)*(mB-mF);
+    if(v>max){max=v; thr=t;}
+  }
+  // 云 = 亮于阈值的像素，标记为 mask
+  const mask = new Uint8Array(w*h);
+  for(let i=0;i<w*h;i++) mask[i] = gray[i]>=thr-6? 1: 0;
+  // 中值滤波：去噪点 3x3
+  const m2 = new Uint8Array(w*h);
+  for(let y=1;y<h-1;y++){
+    for(let x=1;x<w-1;x++){
+      const i=y*w+x;
+      let c=0;
+      for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++) c+=mask[i+dy*w+dx];
+      m2[i]=c>=5?1:0;
+    }
+  }
+  return {mask:m2, w, h, thr};
+}
+
+/* 连通域标记（BFS）提取各个 blob，返回按面积排序 */
+function findBlobs(mask, w, h, minAreaRatio=0.005){
+  const vis = new Uint8Array(w*h);
+  const blobs = [];
+  const minArea = w*h*minAreaRatio;
+  const queue = new Int32Array(w*h);
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const i=y*w+x;
+      if(!mask[i] || vis[i]) continue;
+      // BFS
+      let head=0,tail=0;
+      queue[tail++]=i; vis[i]=1;
+      let xmin=Infinity, xmax=-1, ymin=Infinity, ymax=-1, area=0;
+      let sumX=0, sumY=0;
+      while(head<tail){
+        const p = queue[head++];
+        const px = p%w, py = (p/w)|0;
+        area++;
+        if(px<xmin)xmin=px; if(px>xmax)xmax=px;
+        if(py<ymin)ymin=py; if(py>ymax)ymax=py;
+        sumX+=px; sumY+=py;
+        const nbrs = [p-1, p+1, p-w, p+w];
+        for(const nb of nbrs){
+          if(nb<0||nb>=w*h) continue;
+          if(mask[nb] && !vis[nb]){ vis[nb]=1; queue[tail++]=nb; }
+        }
+      }
+      if(area>=minArea){
+        const bw=xmax-xmin+1, bh=ymax-ymin+1;
+        // 计算圆度 circularity = 4πA / P²
+        // 简化：用 (bbox填充率) 近似圆度
+        const fill = area / (bw*bh);
+        const ratio = bw / Math.max(1,bh);
+        // 左右对称度
+        const cx = sumX/area, cy = sumY/area;
+        blobs.push({xmin,xmax,ymin,ymax,bw,bh, area, cx, cy, fill, ratio});
+      }
+    }
+  }
+  blobs.sort((a,b)=>b.area-a.area);
+  return blobs;
+}
+
+/* 根据 blob 特征匹配 Q 版画：
+   - 圆滚滚(高 fill) → 猫/猪/熊猫/团子脸
+   - 扁长 (ratio>1.6) → 海豹 或 柯基屁屁 或 弯月
+   - 高瘦 (ratio<0.6) → 小兔/仙女站立
+   - 有尖峰（多小峰）→ 鹿角/魔法少女头饰
+   - 不规则柔软 → 狐狸/蘑菇/恐龙/兔子
+*/
+function matchStickerByBlob(b, idx){
+  const {fill, ratio, bw, bh, area} = b;
+  // 决定类别池
+  let pool = [];
+  if(fill >= 0.72 && ratio > 0.8 && ratio < 1.3){
+    // 非常圆 → 团团脸动物
+    pool = ['胖达团团','奶凶Q猫','小猪布丁','企鹅团子','柴犬面包'];
+  } else if(fill >= 0.58 && ratio >= 1.3 && ratio <= 2.2){
+    // 横向椭圆 → 海豹、柯基、面包
+    pool = ['海豹球球','柯基屁屁','柴犬面包','小猪布丁'];
+  } else if(fill >= 0.5 && ratio > 2.2){
+    // 很扁长 → 弯月/海上灯塔/蘑菇
+    pool = ['弯月云朵','海上灯塔','蘑菇小屋'];
+  } else if(fill >= 0.55 && ratio < 0.75){
+    // 高瘦 → 站立少女 / 兔兔
+    pool = ['长耳兔兔','Q版仙女','古风背影少女','提灯少女','天使少女','魔法少女'];
+  } else if(fill >= 0.4 && ratio >= 0.75 && ratio < 1.3){
+    // 中等不规则 → 狐狸/小鹿/恐龙/蘑菇
+    pool = ['萌狐小七','软萌恐龙','小鹿铃铃','彩虹热气球','蘑菇小屋'];
+  } else if(fill >= 0.35 && ratio >= 1.0){
+    // 较大、横向延展 → 海上灯塔、许愿星、彩虹热气球
+    pool = ['海上灯塔','彩虹热气球','许愿星','弯月云朵'];
+  } else {
+    // 通用 fallback
+    pool = ['奶凶Q猫','柴犬面包','长耳兔兔','萌狐小七','Q版仙女','小鹿铃铃','彩虹热气球','蘑菇小屋'];
+  }
+  // 根据面积大小加权：大 blob → 更占主导画面的大贴纸
+  pool = pool.slice();
+  // 匹配名字
+  const picked = pool[idx % pool.length] || pool[0];
+  // 找到全库里的定义
+  for(const cat of ['animal','fairy','mix']){
+    const hit = STICKERS[cat].find(s=>s.name===picked);
+    if(hit) return {def:hit, name:picked};
+  }
+  // fallback
+  const flat = [...STICKERS.animal, ...STICKERS.fairy, ...STICKERS.mix];
+  const d = flat[idx % flat.length];
+  return {def:d, name:d.name};
+}
+
+/* ====== 云朵工厂 · 云形变身为 Q 版画身体（核心新逻辑） ======
+   不再叠加固定轮廓 SVG，而是：
+   - 云 blob 本身就是角色的身体 / 脸
+   - 在 blob 上绘制 Q 版五官：大眼+高光、腮红、鼻子+嘴巴
+   - 在 blob 轮廓外根据角色类型"长出"配件：猫耳/狗耳/兔耳/鹿角/蘑菇伞盖/光环 等
+*/
+
+/* 按 blob 特征决定 Q 版画角色类型（返回 cueType）
+   支持全局 cueStyleHint 覆盖：
+   - 'auto'  → 按 blob 特征
+   - 'animal' → 在 cat/dog/fox/panda 中选
+   - 'fairy'  → 在 fairy/moon 中选
+   - 'mix'    → 在全部类型里随机/按特征混合
+*/
+function pickCueTypeForBlob(b, hint){
+  hint = hint || cueStyleHint || 'auto';
+  const {fill, ratio, bw, bh, area} = b;
+  const ANIMAL = ['cat','dog','fox','panda'];
+  const FAIRY  = ['fairy','moon'];
+  const ALL    = ['cat','dog','fox','panda','fairy','moon','lighthouse'];
+  function pickFrom(pool){
+    // 用 blob 面积取一个确定性的索引
+    const idx = Math.floor(b.area * 7 + bw*13 + bh*17 + fill*999) % pool.length;
+    return pool[Math.abs(idx)];
+  }
+  if(hint === 'animal') return pickFrom(ANIMAL);
+  if(hint === 'fairy')  return pickFrom(FAIRY);
+  // auto / mix: 特征匹配
+  if(fill >= 0.72 && ratio > 0.8 && ratio < 1.3) return 'cat';      // 圆滚滚 → 猫脸
+  if(fill >= 0.58 && ratio >= 1.3 && ratio <= 2.2) return 'dog';    // 横椭 → 柴犬/面包
+  if(fill >= 0.5 && ratio > 2.2) return 'moon';                     // 扁长 → 弯月/蘑菇
+  if(fill >= 0.55 && ratio < 0.75) return 'fairy';                  // 高瘦 → 小仙女/兔兔
+  if(fill >= 0.4 && ratio >= 0.75 && ratio < 1.3) return 'fox';     // 中等不规则 → 狐狸/小鹿
+  if(fill >= 0.35 && ratio >= 1.0) return 'lighthouse';             // 横向延展 → 灯塔/星星
+  return hint === 'mix' ? pickFrom(ALL) : 'panda';
+}
+
+/* 在背景画布（云图本身）上绘制 Q 版脸 + 配件
+   所有坐标用 canvas 原生像素，不换算 CSS
+*/
+function drawCueFaceOnBlob(blob, idx){
+  const cw = cloudCanvas.width, ch = cloudCanvas.height;
+  const {xmin, ymin, bw, bh, cx, cy, fill, ratio} = blob;
+
+  // 确定角色
+  const cue = pickCueTypeForBlob(blob);
+
+  // 根据天空挑线条颜色（深色为主，保证可读）
+  const lineColor = pickStickerColorForCloud();
+
+  // ===== 计算五官参考尺寸（以 blob 最小边为基准） =====
+  const base = Math.min(bw, bh);          // 脸"半径"基准
+  const eyeR = Math.max(4, base * 0.085); // 眼睛半径
+  const eyeGap = eyeR * 2.1;              // 眼间距
+  const eyeYoff = base * 0.02;            // 眼睛相对中心的上下偏移（偏上更 Q）
+  const blushR = eyeR * 0.85;
+
+  // 五官中心（略偏上，给嘴巴留空间）
+  const faceCx = cx;
+  const faceCy = cy - bh*0.03;
+
+  ccx.save();
+  // 统一线条风格
+  ccx.lineCap = 'round';
+  ccx.lineJoin = 'round';
+
+  // ---- 1) 眼睛（大眼 + 高光，Q 版画灵魂）----
+  const eyeLX = faceCx - eyeGap/2;
+  const eyeRX = faceCx + eyeGap/2;
+  const eyeY  = faceCy + eyeYoff;
+
+  ccx.fillStyle = lineColor;
+  // 左眼
+  ccx.beginPath();
+  ccx.ellipse(eyeLX, eyeY, eyeR*0.95, eyeR*1.15, 0, 0, Math.PI*2);
+  ccx.fill();
+  // 右眼
+  ccx.beginPath();
+  ccx.ellipse(eyeRX, eyeY, eyeR*0.95, eyeR*1.15, 0, 0, Math.PI*2);
+  ccx.fill();
+  // 高光（左上白点）
+  ccx.fillStyle = '#ffffff';
+  ccx.beginPath(); ccx.arc(eyeLX - eyeR*0.32, eyeY - eyeR*0.4, Math.max(1.5,eyeR*0.28), 0, Math.PI*2); ccx.fill();
+  ccx.beginPath(); ccx.arc(eyeRX - eyeR*0.32, eyeY - eyeR*0.4, Math.max(1.5,eyeR*0.28), 0, Math.PI*2); ccx.fill();
+  // 小次高光
+  ccx.beginPath(); ccx.arc(eyeLX + eyeR*0.36, eyeY + eyeR*0.32, Math.max(1,eyeR*0.14), 0, Math.PI*2); ccx.fill();
+  ccx.beginPath(); ccx.arc(eyeRX + eyeR*0.36, eyeY + eyeR*0.32, Math.max(1,eyeR*0.14), 0, Math.PI*2); ccx.fill();
+
+  // ---- 2) 腮红（两团粉色半透明椭圆） ----
+  ccx.fillStyle = 'rgba(255,110,150,0.58)';
+  const blushY = eyeY + eyeR*1.6;
+  // 更饱满的团子腮红（两层叠加点，中心更实）
+  ccx.beginPath();
+  ccx.ellipse(faceCx - eyeGap*0.95, blushY, blushR*1.12, blushR*0.78, 0, 0, Math.PI*2);
+  ccx.fill();
+  ccx.beginPath();
+  ccx.ellipse(faceCx + eyeGap*0.95, blushY, blushR*1.12, blushR*0.78, 0, 0, Math.PI*2);
+  ccx.fill();
+  // 内圈加深一点
+  ccx.fillStyle = 'rgba(255,92,135,0.55)';
+  ccx.beginPath();
+  ccx.ellipse(faceCx - eyeGap*0.95, blushY, blushR*0.70, blushR*0.48, 0, 0, Math.PI*2);
+  ccx.fill();
+  ccx.beginPath();
+  ccx.ellipse(faceCx + eyeGap*0.95, blushY, blushR*0.70, blushR*0.48, 0, 0, Math.PI*2);
+  ccx.fill();
+
+  // ---- 3) 鼻子 + 微笑嘴 ----
+  ccx.strokeStyle = lineColor;
+  ccx.lineWidth = Math.max(1.2, base*0.022);
+  const noseY = eyeY + eyeR*1.1;
+  // 小三角鼻 / 倒 V 鼻
+  ccx.fillStyle = lineColor;
+  ccx.beginPath();
+  ccx.moveTo(faceCx - eyeR*0.22, noseY);
+  ccx.lineTo(faceCx + eyeR*0.22, noseY);
+  ccx.lineTo(faceCx, noseY + eyeR*0.22);
+  ccx.closePath();
+  ccx.fill();
+  // 人中 + 笑嘴（W 形）
+  ccx.beginPath();
+  ccx.moveTo(faceCx, noseY + eyeR*0.22);
+  ccx.quadraticCurveTo(faceCx - eyeR*0.6, noseY + eyeR*1.05, faceCx - eyeR*1.0, noseY + eyeR*0.7);
+  ccx.moveTo(faceCx, noseY + eyeR*0.22);
+  ccx.quadraticCurveTo(faceCx + eyeR*0.6, noseY + eyeR*1.05, faceCx + eyeR*1.0, noseY + eyeR*0.7);
+  ccx.stroke();
+
+  // ---- 4) 角色配件（在 blob 边界上"长"出来） ----
+  ccx.strokeStyle = lineColor;
+  ccx.lineWidth = Math.max(1.5, base*0.028);
+  ccx.fillStyle = 'none';
+
+  const topY = ymin;         // blob 顶部
+  const botY = ymin + bh;    // blob 底部
+  const leftX = xmin;
+  const rightX = xmin + bw;
+  const topLx = xmin + bw*0.28;
+  const topRx = xmin + bw*0.72;
+
+  switch(cue){
+    case 'cat': {
+      // 左三角耳（从 blob 顶部长出）
+      const earH = Math.max(10, bh*0.28);
+      ccx.beginPath();
+      ccx.moveTo(topLx - bw*0.04, topY + 2);
+      ccx.lineTo(topLx - bw*0.02 - bw*0.05, topY - earH);
+      ccx.lineTo(topLx + bw*0.06, topY + 2);
+      ccx.closePath(); ccx.stroke();
+      // 左耳内廓
+      ccx.beginPath();
+      ccx.moveTo(topLx - bw*0.02, topY);
+      ccx.lineTo(topLx - bw*0.04, topY - earH*0.55);
+      ccx.lineTo(topLx + bw*0.03, topY);
+      ccx.stroke();
+      // 右耳
+      ccx.beginPath();
+      ccx.moveTo(topRx - bw*0.06, topY + 2);
+      ccx.lineTo(topRx + bw*0.02 + bw*0.05, topY - earH);
+      ccx.lineTo(topRx + bw*0.04, topY + 2);
+      ccx.closePath(); ccx.stroke();
+      ccx.beginPath();
+      ccx.moveTo(topRx - bw*0.03, topY);
+      ccx.lineTo(topRx + bw*0.04, topY - earH*0.55);
+      ccx.lineTo(topRx + bw*0.02, topY);
+      ccx.stroke();
+      // 胡须
+      ccx.lineWidth = Math.max(1, base*0.016);
+      const whY = noseY + eyeR*0.5;
+      ccx.beginPath();
+      ccx.moveTo(faceCx - eyeR*1.5, whY); ccx.lineTo(faceCx - eyeR*2.8, whY - eyeR*0.25);
+      ccx.moveTo(faceCx - eyeR*1.5, whY + eyeR*0.3); ccx.lineTo(faceCx - eyeR*2.8, whY + eyeR*0.45);
+      ccx.moveTo(faceCx + eyeR*1.5, whY); ccx.lineTo(faceCx + eyeR*2.8, whY - eyeR*0.25);
+      ccx.moveTo(faceCx + eyeR*1.5, whY + eyeR*0.3); ccx.lineTo(faceCx + eyeR*2.8, whY + eyeR*0.45);
+      ccx.stroke();
+      break;
+    }
+    case 'dog': {
+      // 垂耳（趴趴耳，柴犬风）
+      const earH = Math.max(12, bh*0.42);
+      // 左垂耳
+      ccx.beginPath();
+      ccx.moveTo(leftX + bw*0.06, topY + bh*0.1);
+      ccx.quadraticCurveTo(leftX - bw*0.08, topY + bh*0.35, leftX + bw*0.02, topY + earH);
+      ccx.quadraticCurveTo(leftX + bw*0.16, topY + bh*0.38, leftX + bw*0.18, topY + bh*0.08);
+      ccx.stroke();
+      // 右垂耳
+      ccx.beginPath();
+      ccx.moveTo(rightX - bw*0.06, topY + bh*0.1);
+      ccx.quadraticCurveTo(rightX + bw*0.08, topY + bh*0.35, rightX - bw*0.02, topY + earH);
+      ccx.quadraticCurveTo(rightX - bw*0.16, topY + bh*0.38, rightX - bw*0.18, topY + bh*0.08);
+      ccx.stroke();
+      // 眉心两道小眉毛
+      ccx.lineWidth = Math.max(1.2, base*0.02);
+      ccx.beginPath();
+      ccx.moveTo(faceCx - eyeGap*0.38, eyeY - eyeR*1.4);
+      ccx.quadraticCurveTo(faceCx - eyeGap*0.48, eyeY - eyeR*1.8, faceCx - eyeGap*0.58, eyeY - eyeR*1.3);
+      ccx.moveTo(faceCx + eyeGap*0.38, eyeY - eyeR*1.4);
+      ccx.quadraticCurveTo(faceCx + eyeGap*0.48, eyeY - eyeR*1.8, faceCx + eyeGap*0.58, eyeY - eyeR*1.3);
+      ccx.stroke();
+      break;
+    }
+    case 'fox': {
+      // 尖耳 + 头顶小花
+      const earH = Math.max(10, bh*0.32);
+      ccx.beginPath();
+      ccx.moveTo(topLx - bw*0.02, topY + 2);
+      ccx.lineTo(topLx - bw*0.06, topY - earH);
+      ccx.lineTo(topLx + bw*0.08, topY + 4);
+      ccx.closePath(); ccx.stroke();
+      ccx.beginPath();
+      ccx.moveTo(topRx - bw*0.08, topY + 4);
+      ccx.lineTo(topRx + bw*0.06, topY - earH);
+      ccx.lineTo(topRx + bw*0.02, topY + 2);
+      ccx.closePath(); ccx.stroke();
+      // 头顶小花心
+      ccx.fillStyle = lineColor;
+      ccx.beginPath(); ccx.arc(cx, topY - earH*0.5, Math.max(2, eyeR*0.22), 0, Math.PI*2); ccx.fill();
+      ccx.fillStyle = 'none';
+      for(let a=0; a<5; a++){
+        const ang = a * Math.PI*2/5;
+        const r = eyeR*0.55;
+        ccx.beginPath();
+        ccx.ellipse(cx + Math.cos(ang)*r*0.6, topY - earH*0.5 + Math.sin(ang)*r*0.6, r*0.36, r*0.5, ang, 0, Math.PI*2);
+        ccx.stroke();
+      }
+      break;
+    }
+    case 'panda': {
+      // 熊猫圆黑眼圈
+      ccx.save();
+      ccx.fillStyle = lineColor;
+      ccx.beginPath(); ccx.ellipse(eyeLX, eyeY, eyeR*1.5, eyeR*1.25, -0.25, 0, Math.PI*2); ccx.fill();
+      ccx.beginPath(); ccx.ellipse(eyeRX, eyeY, eyeR*1.5, eyeR*1.25,  0.25, 0, Math.PI*2); ccx.fill();
+      // 眼白 + 高光再画一次
+      ccx.fillStyle = '#fff';
+      ccx.beginPath(); ccx.ellipse(eyeLX, eyeY, eyeR*0.95, eyeR*1.15, 0, 0, Math.PI*2); ccx.fill();
+      ccx.beginPath(); ccx.ellipse(eyeRX, eyeY, eyeR*0.95, eyeR*1.15, 0, 0, Math.PI*2); ccx.fill();
+      ccx.fillStyle = lineColor;
+      ccx.beginPath(); ccx.ellipse(eyeLX, eyeY, eyeR*0.65, eyeR*0.85, 0, 0, Math.PI*2); ccx.fill();
+      ccx.beginPath(); ccx.ellipse(eyeRX, eyeY, eyeR*0.65, eyeR*0.85, 0, 0, Math.PI*2); ccx.fill();
+      ccx.fillStyle = '#fff';
+      ccx.beginPath(); ccx.arc(eyeLX - eyeR*0.2, eyeY - eyeR*0.3, Math.max(1.5,eyeR*0.24), 0, Math.PI*2); ccx.fill();
+      ccx.beginPath(); ccx.arc(eyeRX - eyeR*0.2, eyeY - eyeR*0.3, Math.max(1.5,eyeR*0.24), 0, Math.PI*2); ccx.fill();
+      ccx.restore();
+      // 圆耳朵（两个小圆圈）
+      ccx.strokeStyle = lineColor;
+      ccx.fillStyle = lineColor;
+      ccx.beginPath(); ccx.arc(leftX + bw*0.16, topY + bh*0.1, Math.max(4, bw*0.06), 0, Math.PI*2); ccx.fill();
+      ccx.beginPath(); ccx.arc(rightX - bw*0.16, topY + bh*0.1, Math.max(4, bw*0.06), 0, Math.PI*2); ccx.fill();
+      break;
+    }
+    case 'fairy': {
+      // 头顶光环（细圆）
+      ccx.strokeStyle = lineColor;
+      ccx.lineWidth = Math.max(1.2, base*0.02);
+      const haloR = Math.max(14, base*0.42);
+      ccx.beginPath();
+      ccx.ellipse(cx, topY - haloR*0.55, haloR, haloR*0.38, 0, 0, Math.PI*2);
+      ccx.stroke();
+      // 两侧仙女小翅膀（云两侧小羽毛）
+      ccx.fillStyle = 'none';
+      ccx.lineWidth = Math.max(1, base*0.018);
+      const wingY = cy + bh*0.1;
+      ccx.beginPath();
+      ccx.moveTo(leftX - bw*0.02, wingY);
+      ccx.quadraticCurveTo(leftX - bw*0.3, wingY - bh*0.3, leftX - bw*0.22, wingY - bh*0.02);
+      ccx.quadraticCurveTo(leftX - bw*0.25, wingY + bh*0.08, leftX - bw*0.02, wingY + bh*0.05);
+      ccx.stroke();
+      ccx.beginPath();
+      ccx.moveTo(rightX + bw*0.02, wingY);
+      ccx.quadraticCurveTo(rightX + bw*0.3, wingY - bh*0.3, rightX + bw*0.22, wingY - bh*0.02);
+      ccx.quadraticCurveTo(rightX + bw*0.25, wingY + bh*0.08, rightX + bw*0.02, wingY + bh*0.05);
+      ccx.stroke();
+      // 小星芒
+      drawStarMark(ccx, cx, topY - haloR*0.55, Math.max(3, haloR*0.22), lineColor);
+      break;
+    }
+    case 'moon': {
+      // 弯月闭眼表情（弯弯的睡眼 + 月亮钩）
+      ccx.strokeStyle = lineColor;
+      ccx.lineWidth = Math.max(1.5, base*0.025);
+      // 睡眼（^ ^）
+      ccx.beginPath();
+      ccx.moveTo(eyeLX - eyeR, eyeY); ccx.quadraticCurveTo(eyeLX, eyeY - eyeR*0.9, eyeLX + eyeR, eyeY);
+      ccx.moveTo(eyeRX - eyeR, eyeY); ccx.quadraticCurveTo(eyeRX, eyeY - eyeR*0.9, eyeRX + eyeR, eyeY);
+      ccx.stroke();
+      // 云边挂一个小钩（月牙形）
+      ccx.beginPath();
+      ccx.arc(rightX + bw*0.12, topY + bh*0.2, Math.max(10, bw*0.14), Math.PI*0.2, Math.PI*1.25);
+      ccx.stroke();
+      // 小星星点缀
+      const rng = mulberry32(seedFromImg(bgImg) + idx);
+      for(let i=0;i<4;i++){
+        const sx = xmin + rng()*bw;
+        const sy = ymin + rng()*bh;
+        drawStarMark(ccx, sx, sy, Math.max(2, base*0.05), lineColor);
+      }
+      break;
+    }
+    case 'lighthouse': {
+      // 右上小星星
+      drawStarMark(ccx, rightX - bw*0.1, topY + bh*0.1, Math.max(3, base*0.1), lineColor);
+      drawStarMark(ccx, rightX - bw*0.25, topY - bh*0.05, Math.max(2, base*0.06), lineColor);
+      // 底部小波浪线条（海）
+      ccx.strokeStyle = lineColor;
+      ccx.lineWidth = Math.max(1, base*0.018);
+      ccx.beginPath();
+      const wy = botY - bh*0.04;
+      ccx.moveTo(leftX, wy);
+      for(let x=0; x<=bw; x+=bw*0.08){
+        ccx.quadraticCurveTo(leftX + x + bw*0.04, wy + bh*0.04, leftX + x + bw*0.08, wy);
+      }
+      ccx.stroke();
+      break;
+    }
+  }
+
+  ccx.restore();
+  return cue;
+}
+
+/* 画一个小星芒标记 */
+function drawStarMark(g, cx, cy, r, color){
+  g.save();
+  g.strokeStyle = color;
+  g.fillStyle = color;
+  g.lineWidth = Math.max(1, r*0.28);
+  g.lineCap = 'round';
+  // 十字四芒
+  g.beginPath();
+  g.moveTo(cx - r, cy); g.lineTo(cx + r, cy);
+  g.moveTo(cx, cy - r); g.lineTo(cx, cy + r);
+  g.moveTo(cx - r*0.6, cy - r*0.6); g.lineTo(cx + r*0.6, cy + r*0.6);
+  g.moveTo(cx + r*0.6, cy - r*0.6); g.lineTo(cx - r*0.6, cy + r*0.6);
+  g.stroke();
+  // 中心点
+  g.beginPath(); g.arc(cx, cy, Math.max(1,r*0.18), 0, Math.PI*2); g.fill();
+  g.restore();
+}
+
+/* 根据画布整体亮度选一个对比色 */
+function pickStickerColorForCloud(){
+  const w=cloudCanvas.width, h=cloudCanvas.height;
+  // 取左上角天空采样
+  try{
+    const d = ccx.getImageData(4,4, Math.min(120,w>>1), Math.min(80,h>>1)).data;
+    let sr=0, sg=0, sb=0, n=0;
+    for(let i=0;i<d.length;i+=4){ sr+=d[i]; sg+=d[i+1]; sb+=d[i+2]; n++; }
+    const r=sr/n, g=sg/n, b=sb/n;
+    const lum = 0.299*r + 0.587*g + 0.114*b;
+    const sat = (Math.max(r,g,b)-Math.min(r,g,b));
+    // 蓝天 → 紫色描边
+    if(b>r && b>g && lum>120) return '#5b4fff';
+    // 偏紫/粉 → 玫红
+    if(sat<30 && lum<140) return '#1d1d1f';
+    if(r>g && r>b+8) return '#6c5ce7';
+    if(lum>200) return '#1d1d1f';
+    return '#b23b81';
+  }catch(e){ return '#1d1d1f'; }
+}
+
+/* 主入口：上传后自动分析所有 blob → 云本身变身为 Q 版画身体
+   先把画布重置为纯原图（擦除之前的五官），再二值化、找 blob，最后逐朵云绘制 cue 脸 */
+function autoAdaptCloudStickers(){
+  try{
+    if(!bgImg) return toast('请先上传一张云朵照片～');
+    const w = cloudCanvas.width, h = cloudCanvas.height;
+    // 0. 先擦除之前叠加的 cue 画，恢复纯原图（人脸是画在 ccx 上的）
+    ccx.save();
+    ccx.setTransform(1,0,0,1,0,0);
+    ccx.clearRect(0,0,w,h);
+    ccx.drawImage(bgImg, 0, 0);
+    ccx.restore();
+
+    // 1. 二值化 + blob 检测（在已恢复的纯原图上进行）
+    const {mask} = binarizeClouds(ccx, w, h);
+    const blobs = findBlobs(mask, w, h, 0.004);
+    if(!blobs.length){
+      toast('好像没有识别到云朵…你也可以手动在「选一枚轮廓」里点喜欢的贴纸叠加～');
+      return;
+    }
+    // 取较大的前 N 朵（避免过多）
+    const N = Math.min(5, Math.max(1, Math.min(blobs.length, 2 + Math.floor(blobs.length/2))));
+    const pick = blobs.slice(0, N);
+    // 2. 每朵云画 cue 脸（五官+配件）
+    pick.forEach((b, i)=> drawCueFaceOnBlob(b, i));
+    // 清空之前 DOM 层的旧贴纸（避免和新画法重叠混乱），用户仍可手动再加
+    toast(`已为 ${pick.length} 朵云量身定做 Q 版画灵魂 ✨ 想再加点装饰？手动点下方贴纸叠加吧～`);
+  }catch(err){
+    console.error(err);
+    toast('自动识别遇到小问题，可手动挑选贴纸叠加～');
+  }
 }
 
 ['cloudDrop','cloudFile'].forEach(id=>{
@@ -995,21 +1544,498 @@ function renderThumbs(){
   $('#postSaveRow').hidden = !posts.some(p=>p.processed);
 }
 
-/* 单张处理 */
+/* 单张处理 —— 上下拼接海报：
+   上半 = 原图（不做任何修改，遵循 travel-photo-abstraction 规范）
+   下半 = 按 travel-photo-abstraction × gc-minimal-zine-poster 两 skill 规则生成的抽象面板
+*/
 async function processOne(p){
   if(!p.img) await loadImg(p.src).then(i=>p.img=i);
   const style = document.querySelector('input[name=postStyle]:checked').value;
+
+  const CW = 1200;  // 画布统一宽度
+  // 上半照片尺寸：等比缩放到宽 CW
+  const upperW = CW;
+  const upperH = Math.round(upperW * (p.img.naturalHeight / p.img.naturalWidth));
+  // 下半抽象面板高度：按 travel-photo-abstraction 规范取 1.10–1.60 倍（这里用 1.30）
+  const lowerH = Math.round(upperH * 1.30);
+  // 分隔条（非常薄，平直无装饰）
+  const DIV = 2;
+  const CH = upperH + DIV + lowerH;
+
   const canvas = document.createElement('canvas');
-  const ratio = p.img.height / p.img.width;
-  canvas.width = 1200; canvas.height = Math.round(1200 * ratio);
+  canvas.width = CW; canvas.height = CH;
   const g = canvas.getContext('2d');
   g.imageSmoothingEnabled = true;
-  // 等待较长时间的 AI 级算法处理
-  if(style==='abstract-editorial') await drawAbstractEditorial(g, p.img, canvas);
-  else if(style==='zine') await drawZine(g, p.img, canvas);
-  else await drawPrompt(g, p.img, canvas);
+
+  // ========== 上半：原图（绝不修改、不加滤镜、不做重画）==========
+  g.save();
+  g.drawImage(p.img, 0, 0, upperW, upperH);
+  g.restore();
+  // 平直分隔线
+  g.fillStyle = '#E8E4DA';
+  g.fillRect(0, upperH, CW, DIV);
+
+  // ========== 下半：抽象面板（两 skill 规范联合）==========
+  // 1. CLEAN 模式象牙白底（纯色 #F3F0E8，无渐变/颗粒）
+  const IVORY = '#F3F0E8';
+  g.fillStyle = IVORY;
+  g.fillRect(0, upperH + DIV, CW, lowerH);
+
+  // 2. 从原图提取 5 个主色（K-means 量化）
+  const tmpC = document.createElement('canvas');
+  const TS = 200; // 小采样尺寸提速
+  const tW = TS, tH = Math.round(TS * (p.img.naturalHeight/p.img.naturalWidth));
+  tmpC.width = tW; tmpC.height = tH;
+  const tg = tmpC.getContext('2d');
+  tg.drawImage(p.img, 0, 0, tW, tH);
+  const palette = await kmeansQuantize(tg, tW, tH, 5, 5);
+
+  // 3. 分析原图的空间事实
+  const facts = analyzeSourceVisualFacts(tg, tW, tH, palette);
+
+  // 4. 依据风格选择强调色策略
+  //    gc-minimal-zine-poster：钴蓝优先作为高彩锚点
+  const COBALT = '#2B5BFF';
+  let accent = COBALT;
+  // 如果调色板里明显存在饱和度高的色，优先用来源色（确保源事实可信）
+  const srcAccent = pickSourceAccentFromPalette(palette);
+  if(srcAccent) accent = srcAccent;
+  const MUTED = '#2E2C28';   // 墨灰/炭黑线
+  const LIGHT = '#B9B4A8';   // 浅灰辅助线
+
+  // 5. 在抽象面板区域内构建母题
+  const panelTop = upperH + DIV;
+  // 母题目标：~35% 宽 & ≤28% 高（留白 75–88%）
+  const motifTargetW = Math.round(CW * 0.35);
+  const motifTargetH = Math.round(lowerH * 0.26);
+  // 母题在面板中的位置：按源图重心相对偏移，但整体居中且不贴边
+  const srcGX = facts.gravityX; // 0..1
+  const srcGY = facts.gravityY;
+  // 映射到面板：srcGX=0.5 → 面板水平中心；并做收缩（保证不贴边）
+  const motifCx = CW*0.18 + (srcGX) * CW*0.64;
+  const motifCy = panelTop + lowerH*0.30 + (srcGY - 0.5)*lowerH*0.10;
+  const motif = {cx: motifCx, cy: motifCy, w: motifTargetW, h: motifTargetH, panelTop, lowerH, CW};
+
+  // 选择绘制"家族"：主母题 + 最多两个辅助
+  drawAbstractMarksFromFacts(g, facts, palette, accent, MUTED, LIGHT, motif);
+
+  // 6. 档案微型文字（Microtype — 按 travel-photo-abstraction 规范）
+  drawArchiveMicrotype(g, CW, panelTop, lowerH, facts, palette, style);
+
+  // 7. 自定义提示词风格：在底部叠加一行用户文字 + 轻微 LUT 色调
+  if(style === 'prompt'){
+    const text = ($('#promptInput').value || '').trim();
+    const theme = text || '旅途';
+    applySemanticLUTInRect(g, CW, Math.round(lowerH*0.35), CW, panelTop + lowerH*0.65, theme);
+    if(text){
+      const color = ($$('#promptColors .swatch.is-active')[0] || $$('#promptColors .swatch')[0]).dataset.c || MUTED;
+      drawPromptCaption(g, text, CW, panelTop, lowerH, color);
+    }
+  }
+
   p.canvas = canvas;
   p.processed = true;
+}
+
+/* 从 K-means 调色板挑一个最适合做"强调色"的源色
+   规则：饱和度 + 明度都不落于灰区的那个色
+*/
+function pickSourceAccentFromPalette(palette){
+  let best = null, bestScore = -1;
+  for(const c of palette){
+    const [r,g,b] = c;
+    const mx = Math.max(r,g,b), mn = Math.min(r,g,b);
+    const sat = mx===0? 0 : (mx-mn)/mx;
+    const lum = (0.299*r+0.587*g+0.114*b)/255;
+    // 避免纯黑白灰（sat<0.1）和过暗/过亮
+    if(sat<0.15) continue;
+    if(lum<0.18 || lum>0.88) continue;
+    const score = sat * (1 - Math.abs(lum-0.5)*1.2);
+    if(score>bestScore){bestScore=score; best=`rgb(${r|0},${g|0},${b|0})`;}
+  }
+  return best;
+}
+
+/* 在指定矩形区域内应用语义 LUT（用于旅途邮局下半面板的 prompt 风格局部调色） */
+function applySemanticLUTInRect(g, W, H, ox, oy, prompt){
+  if(!prompt) return null;
+  const pl = prompt.toLowerCase();
+  let matched = null;
+  for(const key in PROMPT_LUTS){
+    if(new RegExp(key.split('|').map(k=>k.replace(/[.*+?^${}()[\]\\]/g,'\\$&')).join('|'),'i').test(pl)){
+      matched = PROMPT_LUTS[key]; break;
+    }
+  }
+  if(!matched) return null;
+  const {hue, sat, lum, tint} = matched;
+  const imgData = g.getImageData(ox, oy, W, H);
+  const d = imgData.data;
+  const tr = tint[0]/255, tg=tint[1]/255, tb=tint[2]/255;
+  for(let i=0;i<d.length;i+=4){
+    let [h2,s2,l2] = rgbToHsl(d[i],d[i+1],d[i+2]);
+    h2 = (h2 + hue + 360)%360;
+    s2 = Math.max(0,Math.min(1, s2*sat));
+    l2 = Math.max(0,Math.min(1, l2*lum));
+    let [r,g2,b] = hslToRgb(h2,s2,l2);
+    r = Math.round(r*(1-0.18) + tr*255*0.18);
+    g2= Math.round(g2*(1-0.18)+ tg*255*0.18);
+    b = Math.round(b*(1-0.18) + tb*255*0.18);
+    d[i]=r; d[i+1]=g2; d[i+2]=b;
+  }
+  g.putImageData(imgData, ox, oy);
+  return matched;
+}
+
+/* =========================================================
+   旅途邮局 · 两 GitHub Skill 联合引擎（核心新逻辑）
+   - travel-photo-abstraction：源关系→极简标记（质量→色块,物体→圆点,地平线→细线…）
+   - gc-minimal-zine-poster：大面积留白 + 单高彩锚点 + 微文字档案系统
+   ========================================================= */
+
+/* 分析源图的「可观察视觉事实」（按 travel-photo-abstraction style-guide）
+   返回：重心(gravityX/Y)、地平线y、左右上下主色区、色块数量、主要方向、重复节奏、暗/亮区位置
+*/
+function analyzeSourceVisualFacts(tg, tW, tH, palette){
+  const d = tg.getImageData(0,0,tW,tH).data;
+  // 1) 亮度重心
+  let gx=0, gy=0, wsum=0;
+  // 2) 逐行平均亮度 — 检测地平线（行与行间突变）
+  const rowLum = new Float32Array(tH);
+  // 3) 列亮度（检测左右边界/方向）
+  const colLum = new Float32Array(tW);
+  // 4) 按 4x4 网格做"区域特征"记录
+  const GX=5, GY=5;
+  const grid = Array.from({length:GY},()=>Array.from({length:GX},()=>({lum:0,sat:0,domIdx:0,px:0})));
+  // 5) 重复感：统计每列与相邻列相似度
+  for(let y=0;y<tH;y++){
+    let rL=0;
+    for(let x=0;x<tW;x++){
+      const i=(y*tW+x)*4;
+      const r=d[i], g2=d[i+1], b=d[i+2];
+      const lum = 0.299*r+0.587*g2+0.114*b;
+      const mx=Math.max(r,g2,b), mn=Math.min(r,g2,b);
+      const sat = mx===0?0:(mx-mn)/mx;
+      const wL = lum + 30; // 亮像素权重更高（反映物体存在/天空边界）
+      gx += x*wL; gy += y*wL; wsum += wL;
+      rL += lum; colLum[x] += lum;
+      const gxi = Math.min(GX-1, (x/tW*GX)|0);
+      const gyi = Math.min(GY-1, (y/tH*GY)|0);
+      const cell = grid[gyi][gxi];
+      cell.lum += lum; cell.sat += sat; cell.px += 1;
+    }
+    rowLum[y] = rL / tW;
+  }
+  for(let x=0;x<tW;x++) colLum[x]/=tH;
+  gx /= (wsum*tW); gy /= (wsum*tH);   // 归一到 0..1
+  // 地平线：找相邻行亮度差异最大的 y（天空→地面的交界）
+  let horizonY = 0.5, maxDiff = -1;
+  for(let y=Math.floor(tH*0.15); y<tH*0.8; y++){
+    const diff = Math.abs(rowLum[y+1] - rowLum[y-1]);
+    if(diff>maxDiff){maxDiff=diff; horizonY = y/tH;}
+  }
+  // 方向感：水平 vs 垂直能量比
+  let hEnergy=0, vEnergy=0;
+  for(let y=1;y<tH-1;y++) hEnergy += Math.abs(rowLum[y+1]-rowLum[y-1]);
+  for(let x=1;x<tW-1;x++) vEnergy += Math.abs(colLum[x+1]-colLum[x-1]);
+  const direction = (hEnergy > vEnergy*1.25) ? 'horizontal'
+                  : (vEnergy > hEnergy*1.25) ? 'vertical'
+                  : 'balanced';
+  // 区域质心（grid 归一化 → 用于生成模块）
+  for(const row of grid) for(const c of row){ if(c.px){c.lum/=c.px; c.sat/=c.px;} }
+  // 每个 cell 分配到最接近的 palette 颜色索引
+  for(const row of grid){
+    for(const c of row){
+      // 估算该 cell 的平均色：从原始 palette 按亮度选最近
+      let md=Infinity, bi=0;
+      for(let k=0;k<palette.length;k++){
+        const [pr,pg,pb]=palette[k];
+        const pl = 0.299*pr+0.587*pg+0.114*pb;
+        const dd = Math.abs(c.lum - pl);
+        if(dd<md){md=dd; bi=k;}
+      }
+      c.domIdx = bi;
+    }
+  }
+  // 上下分区主色索引
+  let topCounts = new Array(palette.length).fill(0), botCounts = new Array(palette.length).fill(0);
+  for(let j=0;j<GY;j++){
+    for(let i=0;i<GX;i++){
+      if(j<GY/2) topCounts[grid[j][i].domIdx]++;
+      else        botCounts[grid[j][i].domIdx]++;
+    }
+  }
+  const topDom = argmax(topCounts), botDom = argmax(botCounts);
+  return {
+    gravityX: gx, gravityY: gy,
+    horizonY,
+    direction,
+    grid, GX, GY,
+    topPaletteIdx: topDom, botPaletteIdx: botDom,
+  };
+}
+function argmax(arr){ let mx=-Infinity, idx=0; for(let i=0;i<arr.length;i++) if(arr[i]>mx){mx=arr[i];idx=i;} return idx; }
+
+/* 按 travel-photo-abstraction 映射规则，从 source facts 生成极简抽象母题
+   映射表（严格按 style-guide）：
+     Mass or field → 一块干净平涂色块
+     Compact object → 圆点 / 药丸 / 短线 / 极小剪影
+     Horizon or boundary → 一根细线
+     Direction or motion → 尖锥形 / 细条纹 / 对齐短条 / 方向序列
+     Repeated objects → 重复模块（保留源间距与层级）
+     Radial structure → 半弧 + 少量辐条 + 节点
+     Occlusion / enclosure → 嵌套 / 交叠形状
+     Reflection / shadow → 对齐它自身的、更短更浅的回声
+*/
+function drawAbstractMarksFromFacts(g, facts, palette, ACCENT, MUTED, LIGHT, motif){
+  const {cx, cy, w, h} = motif;
+  g.save();
+  g.lineCap = 'round'; g.lineJoin = 'round';
+
+  // ====== 基底分色层 (mass)：主色块与次级色块 2–3 层 ======
+  const horizonLocalY = cy - h*0.4 + (h*0.8) * facts.horizonY;
+  const topRGB = palette[facts.topPaletteIdx];
+  const botRGB = palette[facts.botPaletteIdx];
+  // 主色块 1（上半天空/上域）—— 加宽加深
+  const topH = Math.max(8, horizonLocalY - (cy - h*0.46));
+  g.fillStyle = `rgb(${topRGB[0]|0},${topRGB[1]|0},${topRGB[2]|0})`;
+  g.globalAlpha = 0.92;
+  g.beginPath();
+  roundRect(g, cx - w*0.48, cy - h*0.46, w*0.96, topH, 3);
+  g.fill();
+
+  // 主色块 1 的次叠层（上层稍窄，形成 色阶 过渡）
+  g.globalAlpha = 0.58;
+  g.beginPath();
+  roundRect(g, cx - w*0.44, cy - h*0.42, w*0.78, Math.max(4, topH*0.58), 2);
+  g.fill();
+  g.globalAlpha = 1;
+
+  // 主色块 2（下半大地/海/前景）
+  const botBlockY = horizonLocalY + 2;
+  const botBlockH = Math.max(6, (cy + h*0.46) - horizonLocalY - 2);
+  g.fillStyle = `rgb(${botRGB[0]|0},${botRGB[1]|0},${botRGB[2]|0})`;
+  g.globalAlpha = 0.86;
+  g.beginPath();
+  roundRect(g, cx - w*0.48, botBlockY, w*0.96, botBlockH, 3);
+  g.fill();
+  g.globalAlpha = 0.48;
+  g.beginPath();
+  roundRect(g, cx - w*0.40, botBlockY + botBlockH*0.18, w*0.80, Math.max(4, botBlockH*0.55), 2);
+  g.fill();
+  g.globalAlpha = 1;
+
+  // 地平线（墨灰水平线）
+  g.strokeStyle = LIGHT;
+  g.lineWidth = 1.4;
+  g.beginPath();
+  g.moveTo(cx - w*0.48, horizonLocalY);
+  g.lineTo(cx + w*0.48, horizonLocalY);
+  g.stroke();
+
+  // ====== 高彩锚点（ACENT 药丸 + 反射层 + 侧伴）======
+  const accentSize = Math.max(6, Math.min(w*0.20, h*0.26));
+  const gxL = cx + (facts.gravityX - 0.5)*w*0.58;
+  const gyL = horizonLocalY - (1-facts.horizonY)*h*0.28 + (facts.gravityY-0.5)*h*0.08;
+  // 阴影/倒影 拉长的大椭圆
+  g.fillStyle = ACCENT;
+  g.globalAlpha = 0.22;
+  g.beginPath();
+  g.ellipse(gxL + accentSize*0.06, gyL + accentSize*0.60, accentSize*0.58, accentSize*0.18, 0, 0, Math.PI*2);
+  g.fill();
+  // 药丸 主体
+  g.globalAlpha = 1;
+  g.beginPath();
+  g.ellipse(gxL, gyL, accentSize*0.58, accentSize*0.42, 0, 0, Math.PI*2);
+  g.fill();
+  // 药丸 高光（月牙白）
+  g.globalAlpha = 0.8;
+  g.fillStyle = `rgba(255,255,255,0.95)`;
+  g.beginPath();
+  g.ellipse(gxL - accentSize*0.18, gyL - accentSize*0.18, accentSize*0.22, accentSize*0.09, -Math.PI*0.25, 0, Math.PI*2);
+  g.fill();
+  // 侧伴小丸（暗示 repeated object 或 近景同伴）
+  g.globalAlpha = 0.9;
+  g.fillStyle = ACCENT;
+  g.beginPath();
+  g.ellipse(gxL + accentSize*0.92, gyL + accentSize*0.04, accentSize*0.26, accentSize*0.18, 0, 0, Math.PI*2);
+  g.fill();
+  g.globalAlpha = 1;
+
+  // ====== 方向/运动线（travel-photo-abstraction 的 direction→line）======
+  g.strokeStyle = MUTED;
+  g.lineWidth = 1.5;
+  const barX0 = cx - w*0.36;
+  const barY0 = cy - h*0.30;
+  const barLen = w*0.13;
+  if(facts.direction === 'horizontal'){
+    for(let i=0;i<5;i++){
+      g.beginPath();
+      g.moveTo(barX0, barY0 + i*4);
+      g.lineTo(barX0 + barLen - (i%2?8:0), barY0 + i*4);
+      g.stroke();
+    }
+  } else if(facts.direction === 'vertical'){
+    for(let i=0;i<5;i++){
+      g.beginPath();
+      g.moveTo(barX0 + i*4, barY0 - 10);
+      g.lineTo(barX0 + i*4, barY0 + barLen - 10 - (i%2?8:0));
+      g.stroke();
+    }
+  } else {
+    // balanced → 放射状多弧 + 辐条
+    const cxx = barX0 + w*0.06, cyy = barY0;
+    for(let rr=1; rr<=2; rr++){
+      g.beginPath();
+      g.arc(cxx, cyy, w*0.05*rr, -Math.PI*0.95, -Math.PI*0.05);
+      g.stroke();
+    }
+    for(let a=0;a<5;a++){
+      const ang = -Math.PI*0.95 + (Math.PI*0.90) * (a/4);
+      g.beginPath();
+      g.moveTo(cxx + Math.cos(ang)*w*0.02, cyy + Math.sin(ang)*w*0.02);
+      g.lineTo(cxx + Math.cos(ang)*w*0.10, cyy + Math.sin(ang)*w*0.10);
+      g.stroke();
+    }
+  }
+
+  // ====== 重复模块（Repeated objects）======
+  const lastRow = facts.grid[facts.GY-1];
+  let streak = 1, best = 1, bi = 0;
+  for(let i=1;i<lastRow.length;i++){
+    if(lastRow[i].domIdx===lastRow[i-1].domIdx) { streak++; if(streak>best){best=streak; bi=i;} }
+    else streak = 1;
+  }
+  if(best >= 1){
+    const color = palette[lastRow[bi].domIdx];
+    g.fillStyle = `rgb(${color[0]|0},${color[1]|0},${color[2]|0})`;
+    const modY = cy + h*0.28;
+    const startX = cx - w*0.40;
+    const gap = w*0.11;
+    const n = Math.max(3, Math.min(best+2, 6));
+    for(let k=0;k<n;k++){
+      // 交替 圆点/小方块
+      const sz = Math.max(3, w*0.022);
+      if(k%2===0){
+        g.beginPath();
+        g.arc(startX + k*gap, modY + (k%2===0?0:4), sz*0.55, 0, Math.PI*2);
+        g.fill();
+      } else {
+        roundRect(g, startX + k*gap - sz*0.5, modY + 4 - sz*0.5, sz, sz, 1);
+        g.fill();
+      }
+    }
+    // 下一行反色（空心描边）
+    g.globalAlpha = 0.8;
+    g.strokeStyle = LIGHT;
+    g.lineWidth = 1.2;
+    for(let k=0;k<n;k++){
+      const sz = Math.max(3, w*0.022);
+      g.beginPath();
+      g.arc(startX + k*gap, modY + sz*1.6 + (k%2===0?4:0), sz*0.45, 0, Math.PI*2);
+      g.stroke();
+    }
+    g.globalAlpha = 1;
+  }
+
+  // ====== 嵌套/遮挡方块（Occlusion）======
+  g.fillStyle = LIGHT;
+  g.globalAlpha = 0.55;
+  roundRect(g, cx - w*0.42, cy + h*0.08, w*0.22, h*0.22, 2);
+  g.fill();
+  g.globalAlpha = 0.85;
+  g.fillStyle = MUTED;
+  roundRect(g, cx - w*0.32, cy + h*0.14, w*0.10, h*0.10, 2);
+  g.fill();
+  g.globalAlpha = 1;
+
+  // ====== 垂直结构参考线（travel-photo-abstraction 的 spatial framework）======
+  g.strokeStyle = LIGHT;
+  g.globalAlpha = 0.6;
+  g.lineWidth = 1;
+  for(let i=1;i<3;i++){
+    const vx = cx - w*0.5 + w*0.9 * (i/3);
+    g.beginPath();
+    g.moveTo(vx, cy - h*0.46);
+    g.lineTo(vx, cy + h*0.46);
+    g.stroke();
+  }
+  g.globalAlpha = 1;
+
+  g.restore();
+}
+
+/* 微型档案文字 — 严格按 travel-photo-abstraction + gc-minimal-zine-poster：
+   - 右上：NO. 00X （极浅灰、极小号、宽字距等宽字体）
+   - 左下或另一空角：两行 = 精确日期(DD MON YYYY) + 1–3 词大写英文氛围短语
+*/
+function drawArchiveMicrotype(g, CW, panelTop, lowerH, facts, palette, style){
+  g.save();
+  const GRAY = '#8C8778';
+  const DARK = '#3F3C34';
+  // — 右上 NO. —
+  g.textAlign = 'right';
+  g.textBaseline = 'alphabetic';
+  g.fillStyle = GRAY;
+  g.font = '500 9px ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+  g.letterSpacing != null && (g.letterSpacing = '2px');
+  const noNum = String(Math.floor((facts.gravityX*997 + facts.gravityY*991) % 900) + 100).padStart(3,'0');
+  g.fillText('NO. ' + noNum, CW - CW*0.04, panelTop + lowerH*0.055);
+
+  // — 左下：日期 + 氛围短语 —
+  g.textAlign = 'left';
+  const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+  const dt = new Date();
+  const dateStr = String(dt.getDate()).padStart(2,'0') + ' ' + months[dt.getMonth()] + ' ' + dt.getFullYear();
+  // 氛围短语（由调色板+方向+地平线推断）
+  const phrase = inferAtmospherePhrase(facts, palette, style);
+  g.fillStyle = DARK;
+  g.font = '500 9px ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+  g.letterSpacing != null && (g.letterSpacing = '1.5px');
+  const lx = CW*0.04;
+  const ly = panelTop + lowerH*0.94;
+  g.fillText(dateStr, lx, ly - 12);
+  g.fillText(phrase, lx, ly);
+
+  g.restore();
+}
+
+/* 从源图事实推断 1-3 个大写英文氛围词（尽量简短有诗意） */
+function inferAtmospherePhrase(facts, palette, style){
+  // 如果是 zine 风格 → 偏档案/杂志感
+  if(style === 'zine'){
+    const z = ['ARCHIVE QUIET','FIELD NOTE','PAPER MEMORY','SILENT STRUCTURE','EDITORIAL DRAFT'];
+    return z[Math.floor((facts.gravityX*1e6 + facts.gravityY*1e3) % z.length)];
+  }
+  if(style === 'prompt'){
+    return ['PERSONAL ALMANAC','JOURNAL PAGE','ROAD NOTE'][0];
+  }
+  // default abstract-editorial → 按方向/地平线挑词
+  const pool = [];
+  if(facts.horizonY < 0.35) pool.push('HIGH SKY', 'AIR QUIET', 'LIGHT STRUCTURE');
+  else if(facts.horizonY > 0.65) pool.push('LOW HORIZON', 'FIELD PATTERN', 'EARTH HUSH');
+  else pool.push('QUIET MASS', 'FRAME MEMORY', 'MID AIR');
+  if(facts.direction === 'horizontal') pool.push('SLOW PASSAGE', 'LONG STILL', 'LINE DRIFT');
+  if(facts.direction === 'vertical')   pool.push('UPWARD SOFT', 'RISE HUSH');
+  pool.push('DISTILLED ROUTE', 'SOURCE STUDY');
+  return pool[Math.floor((facts.gravityX*1e5 + facts.gravityY*1e4) % pool.length)];
+}
+
+/* 自定义提示词风格：在底部贴一行衬线短句，有 gc-minimal-zine 的「小号衬线+可轻微压边」气质 */
+function drawPromptCaption(g, text, CW, panelTop, lowerH, color){
+  g.save();
+  g.fillStyle = color;
+  g.textAlign = 'left';
+  g.textBaseline = 'alphabetic';
+  const maxW = CW*0.58;
+  const size = 18;
+  const lines = wrapText(g, text, 'Georgia, serif', size, maxW).slice(0, 3);
+  let y = panelTop + lowerH*0.78;
+  for(const ln of lines){
+    g.font = `italic 400 ${size}px Georgia, serif`;
+    g.fillText(ln, CW*0.04, y);
+    y += size*1.4;
+  }
+  g.restore();
 }
 
 /* =========================================================
@@ -1649,7 +2675,11 @@ function drawStamp(g, x, y, word, color='#b23b81'){
 }
 function seedFromImg(img){
   let s = 0;
-  const str = (img.naturalWidth+'_'+img.naturalHeight+'_'+(img.currentSrc?.length||0));
+  // 容错：若 img 为空，使用画布尺寸作为种子
+  const w = (img && img.naturalWidth) || (typeof cloudCanvas !== 'undefined' ? cloudCanvas.width : 800) || 800;
+  const h = (img && img.naturalHeight) || (typeof cloudCanvas !== 'undefined' ? cloudCanvas.height : 600) || 600;
+  const cs = (img && img.currentSrc && img.currentSrc.length) || 0;
+  const str = (w+'_'+h+'_'+cs);
   for(let i=0;i<str.length;i++) s = (s*31 + str.charCodeAt(i))>>>0;
   return s || 1;
 }
