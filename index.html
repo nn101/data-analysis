@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>云邮小铺 · Cloud & Post Studio</title>
+  <title>云邮四海 · Clouds & Postcards Worldwide</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600&family=Ma+Shan+Zheng&family=ZCOOL+KuaiLe&display=swap" rel="stylesheet" />
@@ -20,9 +20,9 @@
 
   <header class="app-header">
     <div class="brand">
-      <span class="brand-mark">✿</span>
-      <h1>云邮小铺</h1>
-      <span class="brand-sub">Cloud Factory · Journey Post</span>
+      <span class="brand-mark">✈</span>
+      <h1>云邮四海</h1>
+      <span class="brand-sub">Clouds & Postcards Worldwide</span>
     </div>
     <nav class="tabs" role="tablist">
       <button class="tab is-active" role="tab" aria-selected="true" data-target="cloud">
@@ -139,7 +139,7 @@
     <section id="post" class="panel" role="tabpanel">
       <div class="panel-intro">
         <h2><span class="emoji">🏣</span> 旅途邮局 <small>Journey Photo Atelier</small></h2>
-        <p>把旅途中的照片批量处理成「抽象旅行海报」或「极简杂志明信片」。一次最多 <b>5</b> 张，一键打包保存到本地。</p>
+        <p>使用 <b>客户端 AI 风格引擎</b>（K-means 色彩量化 / Sobel 艺术描边 / 半色调网点 / 语义色调映射 LUT）批量处理旅途照片。一次最多 <b>5</b> 张，支持打包 ZIP 下载。</p>
       </div>
 
       <div class="workbench">
@@ -167,26 +167,26 @@
                 <input type="radio" name="postStyle" value="abstract-editorial" checked />
                 <div class="style-preview preview-abstraction"></div>
                 <div class="style-name">画报抽象 · Photo Abstract Editorial</div>
-                <div class="style-desc">大色块提炼 · 高级刊物质感</div>
+                <div class="style-desc">K-means 主色块 · Sobel 艺术描边</div>
               </label>
               <label class="style" data-style="zine">
                 <input type="radio" name="postStyle" value="zine" />
                 <div class="style-preview preview-zine"></div>
                 <div class="style-name">极简杂志 · Minimal Zine</div>
-                <div class="style-desc">高级灰 · 留白排版</div>
+                <div class="style-desc">半色调网点 · 纸浆纤维质感</div>
               </label>
               <label class="style" data-style="prompt">
                 <input type="radio" name="postStyle" value="prompt" />
                 <div class="style-preview preview-prompt"></div>
                 <div class="style-name">自定义提示词 · Prompt</div>
-                <div class="style-desc">把你的句子印在照片上</div>
+                <div class="style-desc">语义 LUT 色调映射 + 文字排版</div>
               </label>
             </div>
           </div>
 
           <div class="card" id="promptCard" hidden>
             <h3>③ 写下一句话</h3>
-            <textarea id="promptInput" rows="3" placeholder="例如：夏日的海岸线，带着海盐味的风。"></textarea>
+            <textarea id="promptInput" rows="3" placeholder="例如：夏日的海岸线，带着海盐味的风。&#10;※ 语义关键词会自动匹配风格色调：日落暖橙、海洋蓝紫、森林绿、梦幻粉紫、复古胶片、赛博霓虹、日系清新、黑白单色等。"></textarea>
             <div class="ctrl-row">
               <label>字体</label>
               <select id="promptFont">
@@ -240,7 +240,7 @@
   </main>
 
   <footer class="app-footer">
-    <span>made with ☁️ + 💌 · 云邮小铺</span>
+    <span>made with ☁️ + 💌 · 云邮四海</span>
   </footer>
 
   <!-- Toast -->
