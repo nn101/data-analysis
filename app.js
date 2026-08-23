@@ -1218,6 +1218,13 @@ function autoAdaptCloudStickers(){
   });
 });
 
+// 云朵工厂：点击 dropzone 主动触发文件选择 (iOS 兼容)
+const cloudDropEl = document.getElementById('cloudDrop');
+if(cloudDropEl) cloudDropEl.addEventListener('click', e=>{
+  const inp = document.getElementById('cloudFile');
+  if(inp && e.target !== inp) inp.click();
+});
+
 window.addEventListener('resize', ()=>{ if(bgImg) fitStage(bgImg); });
 
 /* ---------- Sticker Layer 管理 ---------- */
@@ -1469,6 +1476,13 @@ function handlePostFiles(files){
     e.preventDefault(); $('#postDrop').classList.remove('dragover');
     handlePostFiles(e.dataTransfer?.files || []);
   });
+});
+
+// 旅途邮局：点击 dropzone 主动触发文件选择 (iOS 兼容)
+const postDropEl = document.getElementById('postDrop');
+if(postDropEl) postDropEl.addEventListener('click', e=>{
+  const inp = document.getElementById('postFile');
+  if(inp && e.target !== inp) inp.click();
 });
 $('#postClear').addEventListener('click', ()=>{ posts=[]; renderThumbs(); });
 $('#postDemo').addEventListener('click', async ()=>{
